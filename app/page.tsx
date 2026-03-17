@@ -2,6 +2,16 @@
 import Link from "next/link";
 import { getAllPosts } from "@/lib/mdx";
 
+function formatPostDate(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export default function Home() {
   const posts = getAllPosts();
 
@@ -27,7 +37,7 @@ export default function Home() {
                   dateTime={post.date}
                   className="mb-2 block text-sm text-zinc-500 dark:text-zinc-400"
                 >
-                  {post.date}
+                  {formatPostDate(post.date)}
                 </time>
                 <p className="mb-3 text-zinc-600 dark:text-zinc-300">
                   {post.description}
