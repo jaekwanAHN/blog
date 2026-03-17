@@ -48,7 +48,11 @@ export function getAllPosts(): PostMeta[] {
       tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
     };
   });
-  posts.sort((a, b) => (a.date > b.date ? -1 : 1));
+  posts.sort((a, b) => {
+    const aTime = new Date(a.date).getTime();
+    const bTime = new Date(b.date).getTime();
+    return bTime - aTime;
+  });
   return posts;
 }
 
