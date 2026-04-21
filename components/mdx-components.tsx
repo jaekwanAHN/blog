@@ -1,5 +1,6 @@
 // components/mdx-components.tsx
 import type { MDXComponents } from "mdx/types";
+import { MdxImage } from "@/components/mdx-image";
 
 function isExternal(href: string): boolean {
   if (typeof href !== "string" || !href) return false;
@@ -79,4 +80,5 @@ export const mdxComponents: MDXComponents = {
       {children}
     </blockquote>
   ),
+  img: (props) => <MdxImage {...props} />,
 };
