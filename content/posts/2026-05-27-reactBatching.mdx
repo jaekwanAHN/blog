@@ -1,0 +1,414 @@
+---
+title: "React 18에서 setState 동작이 바뀐 걸까?"
+date: "2026-05-27"
+description: "React setState, useEffect와 관련해서 batching을 알아보자."
+tags: ["react, bug, AI, batching"]
+---
+
+---
+
+# React 18에서 setState 동작이 바뀐 걸까? — 타이머 버그로 다시 보는 state 업데이트와 batching
+
+경험을 토대로 AI를 활용하여 작성한 글 입니다.
+
+최근 타이머 기능을 구현하다가 이런 흐름의 버그를 만났다.
+
+```tsx
+let finishing = false;
+
+setRemaining((prev) => {
+  if (prev <= 1) {
+    finishing = true;
+    return 0;
+  }
+
+  return prev - 1;
+});
+
+if (finishing) {
+  setIsRunning(false);
+  setIsFinished(true);
+}
+```
+
+의도는 단순했다.
+
+`remaining`이 1 이하가 되는 순간 `finishing`을 `true`로 만들고, 바로 아래에서 `isRunning`을 `false`, `isFinished`를 `true`로 바꾸려 했다. 그리고 `isFinished`가 `true`가 되면 토스트를 띄우는 구조였다.
+
+```tsx
+useEffect(() => {
+  if (isFinished) setToastOpen(true);
+}, [isFinished]);
+```
+
+하지만 실제로는 토스트가 뜨지 않았다. `remaining`은 0이 되는데, `isRunning`은 계속 `true`로 남아 있고 `isFinished`도 `false`였다.
+
+처음에는 “React 18에서 뭔가 바뀐 건가?” 싶었다. 그런데 결론부터 말하면, **state 업데이트가 즉시 반영되지 않는다는 동작 자체는 React 18에서 새로 생긴 게 아니다. 원래부터 그랬다.** React 18에서 크게 달라진 부분은 **automatic batching의 적용 범위가 넓어진 것**이다.
+
+## setState는 값을 즉시 바꾸지 않는다
+
+React에서 `setState` 또는 `useState`의 setter 함수는 일반 변수 대입처럼 바로 값을 바꾸지 않는다.
+
+예를 들어 이런 코드를 보자.
+
+```tsx
+const [count, setCount] = useState(0);
+
+const handleClick = () => {
+  setCount(count + 1);
+  console.log(count);
+};
+```
+
+`setCount(count + 1)`을 호출했으니 바로 아래 `console.log(count)`에서 1이 찍힐 것 같지만, 실제로는 이전 값인 0이 찍힌다.
+
+React 공식 문서에서도 `set` 함수는 **다음 렌더의 state만 업데이트하며**, 호출 직후 state를 읽으면 여전히 이전 값을 얻게 된다고 설명한다. ([React][1])
+
+즉, React의 state 업데이트는 이런 느낌에 가깝다.
+
+```txt
+setState 호출
+→ 현재 state 값을 즉시 변경하는 것이 아님
+→ 다음 렌더를 위한 업데이트를 예약
+→ React가 렌더링 과정에서 업데이트를 처리
+→ 다음 렌더에서 변경된 state를 사용
+```
+
+그래서 `setState`를 호출한 바로 다음 줄에서 state가 바뀌었을 거라고 기대하면 안 된다.
+
+## updater 함수도 즉시 실행되는 일반 함수처럼 보면 안 된다
+
+문제 코드에서 핵심은 이 부분이다.
+
+```tsx
+setRemaining((prev) => {
+  if (prev <= 1) {
+    finishing = true;
+    return 0;
+  }
+
+  return prev - 1;
+});
+
+if (finishing) {
+  setIsRunning(false);
+  setIsFinished(true);
+}
+```
+
+여기서 `setRemaining`에 넘긴 함수는 updater 함수다.
+
+```tsx
+(prev) => {
+  return prev - 1;
+};
+```
+
+이 함수는 “지금 당장 실행해서 remaining을 바꾸는 함수”가 아니라, React가 업데이트를 처리할 때 이전 state를 넣어 다음 state를 계산하기 위한 함수다.
+
+React 공식 문서의 “Queueing a Series of State Updates”에서는 React가 리렌더링 중 업데이트 큐를 처리하며, updater 함수는 렌더링 중 실행되므로 순수해야 한다고 설명한다. 또한 updater 함수 안에서 state를 설정하거나 side effect를 실행하려고 하면 안 된다고 안내한다. ([React][2])
+
+따라서 updater 함수 안에서 외부 변수인 `finishing`을 바꾸고, 그 값을 같은 콜백 아래쪽에서 바로 검사하는 구조는 위험하다.
+
+```tsx
+let finishing = false;
+
+setRemaining((prev) => {
+  if (prev <= 1) {
+    finishing = true; // updater 내부에서 외부 변수 변경
+    return 0;
+  }
+
+  return prev - 1;
+});
+
+if (finishing) {
+  // 이 시점에 finishing이 true라고 보장하기 어렵다
+}
+```
+
+이 코드는 React의 업데이트 처리 타이밍에 기대고 있다. 문제는 React state 업데이트는 “지금 이 줄에서 실행되고, 바로 다음 줄에서 결과를 쓸 수 있는” 동기 흐름이 아니라는 점이다.
+
+## 이건 React 18에서 바뀐 걸까?
+
+여기서 헷갈리기 쉽다.
+
+결론은 이렇다.
+
+```txt
+setState 호출 직후 state가 바로 바뀌지 않는다
+→ React 18 이전부터 그랬다.
+
+setState(updater)가 업데이트 큐에 들어가고 다음 렌더에서 처리된다
+→ 이것도 React 18 이전부터 그랬다.
+
+React 18에서 바뀐 것
+→ automatic batching의 적용 범위가 넓어졌다.
+```
+
+React 18 이전에도 React 이벤트 핸들러 안에서 발생한 여러 state 업데이트는 batching 되는 경우가 많았다.
+
+```tsx
+const handleClick = () => {
+  setCount((prev) => prev + 1);
+  setOpen(true);
+};
+```
+
+이런 식으로 하나의 React 이벤트 핸들러 안에서 여러 state 업데이트가 일어나면, React는 성능을 위해 이를 하나의 렌더로 묶어 처리했다.
+
+React 18에서 달라진 점은 `setTimeout`, `Promise`, native event, interval 같은 React 이벤트 바깥의 비동기 콜백에서도 batching이 더 넓게 적용된다는 점이다. React 18 Working Group의 automatic batching 설명에서도 React 18의 변경점은 기존 batching 개념을 더 일관되게 확장하는 방향이라고 설명한다. ([GitHub][3])
+
+즉, 내 버그를 두고 “React 18에서 setState가 비동기로 바뀌어서 생긴 문제”라고 말하면 살짝 부정확하다.
+
+더 정확하게는 이렇게 말해야 한다.
+
+> React의 state 업데이트는 원래 호출 즉시 반영되지 않는다. updater 함수도 React의 업데이트 처리 과정에서 실행된다. React 18에서는 automatic batching 범위가 넓어졌기 때문에, timeout, interval, promise 같은 비동기 콜백 안의 업데이트도 더 일관되게 묶여 처리된다. 따라서 원래부터 불안정했던 state 의존 코드가 React 18 환경에서 더 잘 드러날 수 있다.
+
+## 문제의 본질: updater 안의 값을 바깥 동기 흐름에서 쓰려 했다
+
+다시 문제 코드를 보자.
+
+```tsx
+let finishing = false;
+
+setRemaining((prev) => {
+  if (prev <= 1) {
+    finishing = true;
+    return 0;
+  }
+
+  return prev - 1;
+});
+
+if (finishing) {
+  setIsRunning(false);
+  setIsFinished(true);
+}
+```
+
+이 코드의 문제는 `finishing`이 React state도 아니고 ref도 아닌 일반 변수라는 점이다. 그리고 updater 내부에서 그 값을 변경한 뒤, 같은 콜백 아래쪽에서 바로 사용하려고 한다.
+
+하지만 updater 함수는 React의 렌더링/업데이트 처리 흐름 안에서 실행된다. 따라서 이 코드는 “updater가 언제 실행되는가”에 의존한다.
+
+결과적으로 이런 일이 생길 수 있다.
+
+```txt
+interval callback 실행
+→ setRemaining(updater) 호출
+→ updater가 업데이트 큐에 들어감
+→ if (finishing) 검사
+→ 이 시점의 finishing은 여전히 false
+→ 콜백 종료
+→ 이후 React가 updater 처리
+→ remaining은 0이 됨
+→ 하지만 isRunning, isFinished는 바뀌지 않음
+→ 토스트가 뜨지 않음
+```
+
+핵심은 이것이다.
+
+**state 업데이트 결과를 같은 콜백의 아래쪽 코드에서 즉시 사용할 수 있다고 가정하면 안 된다.**
+
+## 해결 방향 1: 다음 값을 직접 계산하고 그 값으로 분기하기
+
+타이머처럼 현재 값을 기준으로 다음 값을 계산해야 한다면, 계산 결과를 명시적인 변수로 만들고 그 값을 기준으로 처리하는 편이 안전하다.
+
+예를 들어 `remainingRef`를 사용해 최신 값을 관리할 수 있다.
+
+```tsx
+const remainingRef = useRef(initialRemaining);
+
+useEffect(() => {
+  remainingRef.current = remaining;
+}, [remaining]);
+
+const finishTimer = () => {
+  setRemaining(0);
+  setIsRunning(false);
+  setIsFinished(true);
+  setToastOpen(true);
+};
+
+const tick = () => {
+  const nextRemaining = Math.max(remainingRef.current - 1, 0);
+
+  remainingRef.current = nextRemaining;
+  setRemaining(nextRemaining);
+
+  if (nextRemaining === 0) {
+    finishTimer();
+  }
+};
+```
+
+이 구조에서는 `setRemaining`의 updater 안에서 외부 변수를 바꾸지 않는다. 대신 `nextRemaining`이라는 명시적인 값을 만들고, 그 값을 기준으로 완료 여부를 판단한다.
+
+```tsx
+const nextRemaining = Math.max(remainingRef.current - 1, 0);
+
+if (nextRemaining === 0) {
+  finishTimer();
+}
+```
+
+이러면 React의 updater 실행 타이밍에 기대지 않는다.
+
+## 해결 방향 2: 완료 이벤트가 발생한 순간에 토스트 열기
+
+기존에는 `isFinished`를 감시해서 토스트를 열고 있었다.
+
+```tsx
+useEffect(() => {
+  if (isFinished) setToastOpen(true);
+}, [isFinished]);
+```
+
+이런 코드는 동작할 수는 있지만, 구조적으로 보면 `isFinished`라는 state를 감시해서 또 다른 state인 `toastOpen`을 변경하는 형태다.
+
+React 공식 문서에서는 Effect를 React 바깥 시스템과 동기화하기 위한 escape hatch로 설명한다. 만약 외부 시스템이 관여하지 않고, props나 state 변경에 따라 다른 state를 업데이트하는 목적이라면 Effect가 필요 없을 가능성이 높다고 말한다. ([React][4])
+
+토스트의 경우 “타이머가 끝났다”라는 이벤트가 발생한 순간에 여는 편이 더 명확하다.
+
+```tsx
+const finishTimer = () => {
+  setRemaining(0);
+  setIsRunning(false);
+  setIsFinished(true);
+  setToastOpen(true);
+};
+```
+
+이렇게 하면 흐름이 단순해진다.
+
+```txt
+타이머 종료
+→ remaining 0으로 변경
+→ 실행 상태 false
+→ 완료 상태 true
+→ 토스트 열기
+```
+
+굳이 `isFinished`가 바뀌었는지 감시했다가 나중에 토스트를 열 필요가 없다.
+
+## 해결 방향 3: 파생 상태는 state로 만들지 않기
+
+경우에 따라 `isFinished` 자체도 state로 들고 있을 필요가 없을 수 있다.
+
+예를 들어 완료 여부가 오직 `remaining`으로만 결정된다면 이렇게 만들 수 있다.
+
+```tsx
+const isFinished = remaining === 0;
+```
+
+이 경우 `isFinished`는 state가 아니라 계산값이다.
+
+```tsx
+const [remaining, setRemaining] = useState(60);
+
+const isFinished = remaining === 0;
+```
+
+이렇게 하면 `remaining`과 `isFinished`가 서로 어긋나는 문제가 사라진다. `remaining`이 0이면 언제나 `isFinished`는 true다.
+
+반대로 `isFinished`가 단순히 `remaining === 0` 이상의 의미를 가진다면, 예를 들어 “사용자가 중간에 취소한 경우는 finished가 아니다” 같은 정책이 있다면 별도 state로 둘 수 있다. 중요한 건 **기존 state로 계산 가능한 값을 또 다른 state로 복사하지 않는 것**이다.
+
+## 피해야 할 패턴
+
+다음과 같은 패턴은 피하는 게 좋다.
+
+```tsx
+let finishing = false;
+
+setRemaining((prev) => {
+  if (prev <= 1) {
+    finishing = true;
+    return 0;
+  }
+
+  return prev - 1;
+});
+
+if (finishing) {
+  setIsRunning(false);
+  setIsFinished(true);
+}
+```
+
+문제점은 세 가지다.
+
+1. updater 함수 안에서 외부 변수를 변경한다.
+2. updater 함수 실행 타이밍에 의존한다.
+3. state 업데이트 결과를 같은 콜백 안에서 즉시 사용할 수 있다고 가정한다.
+
+또 이런 패턴도 조심해야 한다.
+
+```tsx
+useEffect(() => {
+  if (isFinished) {
+    setToastOpen(true);
+  }
+}, [isFinished]);
+```
+
+이 코드가 항상 틀렸다는 뜻은 아니다. 하지만 `isFinished`가 바뀐 결과로 `toastOpen`을 맞추는 구조라면, 애초에 완료 이벤트가 발생한 지점에서 토스트를 여는 편이 더 단순할 수 있다.
+
+## 정리
+
+이번 버그의 핵심은 React 18 자체가 아니라, React state 업데이트 모델을 동기 변수 변경처럼 다룬 데 있었다.
+
+정리하면 다음과 같다.
+
+```txt
+1. setState는 state를 즉시 바꾸지 않는다.
+2. setState 호출 직후 같은 함수 안에서 state를 읽으면 이전 값을 읽는다.
+3. updater 함수는 React가 업데이트를 처리하는 과정에서 실행된다.
+4. updater 함수는 순수해야 하며, 내부에서 외부 변수를 바꾸고 그 값을 바깥 동기 흐름에서 사용하는 건 위험하다.
+5. React 18에서 바뀐 것은 automatic batching의 범위가 넓어진 것이다.
+6. 따라서 이 문제는 React 18에서 새로 생긴 동작이라기보다, 원래부터 불안정했던 패턴이 더 잘 드러난 사례에 가깝다.
+```
+
+결론적으로 타이머 종료 처리는 이런 방향이 더 안전하다.
+
+```tsx
+const finishTimer = () => {
+  setRemaining(0);
+  setIsRunning(false);
+  setIsFinished(true);
+  setToastOpen(true);
+};
+```
+
+그리고 tick에서는 다음 값을 명시적으로 계산해서 분기한다.
+
+```tsx
+const tick = () => {
+  const nextRemaining = Math.max(remainingRef.current - 1, 0);
+
+  remainingRef.current = nextRemaining;
+  setRemaining(nextRemaining);
+
+  if (nextRemaining === 0) {
+    finishTimer();
+  }
+};
+```
+
+React state는 일반 변수처럼 “바로 바꾸고 바로 읽는 값”이 아니다.
+state 업데이트는 다음 렌더를 예약하는 작업이고, updater는 React의 업데이트 큐 안에서 처리된다.
+
+이 차이를 이해하면 `setState` 관련 버그를 훨씬 덜 만나게 된다.
+
+---
+
+## 참고한 공식 문서
+
+- React 공식 문서 — `useState`: `set` 함수는 다음 렌더의 state만 업데이트하며, 호출 직후 state를 읽으면 이전 값을 얻게 된다고 설명한다. ([React][1])
+- React 공식 문서 — `Queueing a Series of State Updates`: React는 리렌더링 중 업데이트 큐를 처리하며, updater 함수는 렌더링 중 실행되므로 순수해야 한다고 설명한다. ([React][2])
+- React 18 Working Group — Automatic batching discussion: React 18에서 automatic batching의 적용 범위가 더 일관되게 확장되었다는 맥락을 설명한다. ([GitHub][3])
+- React 공식 문서 — `You Might Not Need an Effect`: Effect는 외부 시스템과 동기화하기 위한 escape hatch이며, props나 state 변경에 따라 다른 state를 업데이트하려는 목적이라면 Effect가 필요 없을 수 있다고 설명한다. ([React][4])
+
+[1]: https://react.dev/reference/react/useState?utm_source=chatgpt.com "useState"
+[2]: https://react.dev/learn/queueing-a-series-of-state-updates?utm_source=chatgpt.com "Queueing a Series of State Updates"
+[3]: https://github.com/reactwg/react-18/discussions/98?utm_source=chatgpt.com "Education and course material coordination #98"
+[4]: https://react.dev/learn/you-might-not-need-an-effect?utm_source=chatgpt.com "You Might Not Need an Effect"
