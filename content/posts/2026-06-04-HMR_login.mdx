@@ -1,0 +1,184 @@
+---
+title: "개발모드에서 OAuth 뒤로가기 문제"
+date: "2026-06-04"
+description: "dev모드 HMR에서 다르게 동작하는 상황을 겪어본다."
+tags: ["react, HMR, bug, "]
+---
+
+# OAuth 로그인 버튼이 뒤로가기 후 동작하지 않는 문제
+
+경험을 토대로 AI를 활용하여 작성한 글 입니다.
+
+> Supabase OAuth 로그인 화면에서 로그인 버튼 → OAuth 페이지 이동 → 뒤로가기로 돌아오면 버튼이 동작하지 않던 문제. 며칠 헤맸지만 결국 **개발 환경의 HMR websocket이 bfcache를 막아 생긴 착시**였고, 코드 자체는 프로덕션에서 정상 동작하고 있었다.
+
+---
+
+## 1. 문제 현상
+
+구글 / 카카오 OAuth 로그인 화면에서 다음 흐름을 거치면 로그인 버튼 두 개가 모두 동작하지 않았다.
+
+1. 로그인 버튼 클릭
+2. 구글/카카오 OAuth 동의 페이지로 이동
+3. 뒤로가기로 로그인 화면 복귀
+4. 로그인 버튼을 다시 눌러도 **아무 반응 없음**
+
+---
+
+## 2. 원인 분석 과정
+
+### 2-1. 최초 가설 — `loading` 상태 박제
+
+로그인 훅이 `setLoading(true)`만 켜고, 성공 경로(=OAuth 리디렉션)에서는 끄지 않는 구조였다.
+
+```typescript
+function useOAuthLogin(provider: Provider) {
+  const [loading, setLoading] = useState(false);
+
+  const login = async () => {
+    if (loading) return; // ← 박제된 loading=true면 여기서 즉시 return
+    setLoading(true);
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      });
+      if (error) throw error;
+      // 성공 시 OAuth URL로 리디렉션 → 이 줄 이후 도달 안 함 → setLoading(false) 호출 안 됨
+    } catch (err) {
+      console.error(`[login] ${provider} OAuth 실패`, err);
+      setLoading(false); // 에러일 때만 풀림
+    }
+  };
+
+  return { loading, login };
+}
+```
+
+bfcache(back/forward cache)로 페이지가 복원되면 `loading=true` 상태가 스냅샷에 박제된 채 부활하고, 그 결과 `if (loading) return`에 걸려 버튼이 죽는다고 추정했다.
+
+### 2-2. `pageshow` 이벤트가 잡히지 않는다
+
+bfcache 복원을 감지하는 표준 방법은 `pageshow` 이벤트의 `e.persisted` 플래그다. 이를 확인하는 가드 훅을 넣어 디버깅했다.
+
+```typescript
+function useBfcacheGuard() {
+  console.log("useBfcacheGuard");
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      console.log("onPageShow", e.persisted);
+      if (e.persisted) window.location.reload();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+}
+```
+
+확인 결과 단서들이 서로 모순되어 보였다.
+
+| 확인 항목 | 결과 | <br/>
+| 최초 접근 시 `useBfcacheGuard` 로그 | 찍힘 (훅은 정상 호출) | <br/>
+| `'use client'` 지시어 | 있음 | <br/>
+| 뒤로가기 시 `onPageShow` 로그 | **안 찍힘** | <br/>
+| 뒤로가기 시 `useBfcacheGuard` 재실행 | **안 됨** | <br/>
+| cleanup 제거 후 재시도 | 여전히 `onPageShow` 안 찍힘 | <br/>
+| 콘솔에 RAW `pageshow` 리스너 직접 등록 후 뒤로가기 | **안 찍힘** |
+
+페이지가 재마운트되지도(`useBfcacheGuard` 로그 X), bfcache 복원되지도(`pageshow` X) 않는 것처럼 보였다.
+
+### 2-3. DevTools Back/forward cache 진단
+
+크롬 DevTools → **Application 탭 → Back/forward cache → Test back/forward cache** 를 실행하자 원인이 명확해졌다.
+
+> **Pages with WebSocket cannot enter back/forward cache.**
+
+즉, 이 페이지는 처음부터 **bfcache에 진입조차 못 하고 있었다.**
+
+---
+
+## 3. 진짜 원인
+
+**개발 모드(`next dev`)의 HMR(Hot Module Replacement) websocket 연결이 bfcache를 차단**하고 있었다.
+
+- 열려있는 websocket 연결이 있으면 브라우저는 해당 페이지를 bfcache에 저장하지 않는다.
+- 네트워크 탭에 보이던 `webpack-hmr ... websocket 101` 연결이 바로 그 원인.
+- bfcache에 들어가지 못하니 복원도 일어나지 않고, 따라서 `pageshow(persisted: true)`도 영원히 발생하지 않았다.
+- 결국 `useBfcacheGuard`는 **동작할 기회 자체가 없었던** 것이지, 코드가 틀린 게 아니었다.
+
+정리하면, 그동안 본 모든 모순된 단서는 "dev 환경에서는 bfcache가 비활성"이라는 한 가지 사실로 전부 설명된다.
+
+| 관측된 현상 | 실제 의미 | <br/>
+| `onPageShow` 안 찍힘 | dev 모드는 websocket 때문에 bfcache 진입 불가 | <br/>
+| 뒤로가기 시 가드 훅 재실행 안 됨 | full load도 bfcache 복원도 아닌 dev 환경 특유 동작 | <br/>
+| RAW 리스너도 안 잡힘 | 이벤트 자체가 발생하지 않음 | <br/>
+
+---
+
+## 4. 해결 방안
+
+### 핵심: 프로덕션 빌드로 검증
+
+`next build && next start` (또는 실제 배포 환경)에서는 HMR websocket이 없으므로 bfcache가 정상 작동한다. 실제로 프로덕션 환경에서 테스트하자 **로그인 버튼이 정상 동작**했다.
+
+### 권장 코드 — `reload()` 대신 상태만 초기화
+
+`useBfcacheGuard`로 전체 새로고침을 하면 동작은 하지만 화면 깜빡임이 생긴다. 더 가벼운 방법은 bfcache 복원 시 `loading` 상태만 풀어주는 것이다.
+
+```typescript
+"use client";
+
+function useOAuthLogin(provider: Provider) {
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setLoading(false); // reload 대신 상태만 초기화 → 깜빡임 없음
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
+  const login = async () => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      });
+      if (error) throw error;
+    } catch (err) {
+      console.error(`[login] ${provider} OAuth 실패`, err);
+      setLoading(false);
+    }
+  };
+
+  return { loading, login };
+}
+```
+
+---
+
+## 5. 결과
+
+- **개발 환경에서만 재현되던 현상**이었고, 코드 로직 자체는 멀쩡했다.
+- 프로덕션 빌드에서는 bfcache가 정상 작동하여 로그인 버튼이 의도대로 동작함을 확인했다.
+- `loading` 박제 문제는 프로덕션에서 bfcache 복원이 정상화되며 자연스럽게 가려져 있었다.
+- 향후 안정성을 위해 `pageshow(persisted)`에서 `loading` 상태를 초기화하는 방어 코드를 추가하는 것을 권장.
+- 현재는 useBfcacheGuard를 비롯한 모든 코드들을 원복 시켜놓았다. 추후 정리를 통하여 재적용할 예정이다.
+
+---
+
+## 6. 핵심 요약
+
+- **증상**: OAuth 페이지에서 뒤로가기로 돌아오면 로그인 버튼이 동작하지 않음.
+- **착각했던 원인**: `loading=true`가 bfcache에 박제되어 버튼이 막힘.
+- **실제 원인**: 개발 모드의 **HMR websocket이 bfcache 진입을 차단** → bfcache 복원 자체가 안 일어남 → `pageshow`가 발생하지 않아 디버깅 단서가 전부 모순되어 보임.
+- **검증 방법**: DevTools → Application → **Back/forward cache → Test** 로 차단 사유 확인 (`Pages with WebSocket cannot enter back/forward cache`).
+- **해결**: 프로덕션 빌드에서는 정상 동작. 방어적으로 `pageshow(e.persisted)`에서 `loading` 상태를 초기화.
+- **교훈**:
+  - bfcache 관련 동작은 **반드시 프로덕션 빌드에서 검증**할 것. dev 모드의 HMR websocket이 bfcache를 막아 디버깅을 오도한다.
+  - `disk cache`(HTTP 캐시)와 `bfcache`(메모리 스냅샷)는 별개다. 네트워크 탭의 `disk cache` 표기는 bfcache 복원의 증거가 아니다.
+  - 단서가 서로 모순될 땐 추측 대신 **DevTools의 전용 진단 도구**로 직접 측정하는 것이 빠르다.
