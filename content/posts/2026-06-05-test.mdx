@@ -1,0 +1,188 @@
+---
+title: "OAuth 로그인 버튼이 뒤로가기 후 동작하지 않는 문제"
+date: "2026-06-05"
+description: "OAuth 로그인 버튼이 뒤로가기 후 동작하지 않는 문제"
+tags: ["dev, HRM, EventHandler"]
+---
+
+경험을 토대로 AI를 활용하여 작성한 글 입니다.
+
+# OAuth 로그인 버튼이 뒤로가기 후 동작하지 않는 문제 (dev 모드 한정)
+
+
+> Supabase OAuth 로그인 화면에서 로그인 버튼 → OAuth 페이지 이동 → 뒤로가기로 돌아오면 버튼이 동작하지 않던 문제. 결론부터 말하면 **개발 모드(`next dev`)에서만 재현되는 현상**이었고, 프로덕션에서는 bfcache가 정상 작동하여 아무 문제가 없었다. 즉 실제 사용자 환경의 버그가 아니라 dev 환경 특유의 착시였다.
+
+---
+
+## 1. 문제 현상
+
+구글 / 카카오 OAuth 로그인 화면에서 다음 흐름을 거치면 로그인 버튼이 동작하지 않았다.
+
+1. 로그인 버튼 클릭
+2. 구글/카카오 OAuth 동의 페이지로 이동
+3. 뒤로가기로 로그인 화면 복귀
+4. 로그인 버튼을 다시 눌러도 **아무 반응 없음** (`onClick` 자체가 호출되지 않음)
+
+문제가 났던 원본 코드는 아래와 같이 **`loading` 상태나 `disabled` 처리가 전혀 없는** 단순한 형태였다.
+
+```typescript
+'use client'
+
+import { createClient } from '@/lib/supabase/client'
+
+export function GoogleLoginButton() {
+  const handleGoogleLogin = async () => {
+    const supabase = createClient()
+    await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
+    })
+  }
+
+  return (
+    <button type="button" onClick={handleGoogleLogin} /* ... */>
+      Google로 계속하기
+    </button>
+  )
+}
+```
+
+버튼을 비활성화할 상태 자체가 없으므로, "상태가 잘못 박제되어 막혔다" 같은 설명은 처음부터 성립하지 않는다. 클릭하면 매번 `signInWithOAuth`를 호출할 뿐이다.
+
+---
+
+## 2. 핵심 단서 — 환경에 따라 결과가 갈린다
+
+디버깅에서 가장 중요했던 관측은 **개발 모드와 프로덕션의 동작이 정반대**라는 점이었다.
+
+| 환경 | bfcache 동작 | 뒤로가기 후 버튼 |
+|---|---|---|
+| dev 모드 (`next dev`) | HMR websocket이 차단 → bfcache 진입 불가 | **동작 안 함** |
+| 프로덕션 (`next build && start`) | 정상 작동 | **정상 동작** |
+
+이 표가 인과의 방향을 결정한다. **bfcache가 작동하는 프로덕션에서는 버튼이 멀쩡하고, bfcache가 막힌 dev에서만 버튼이 고장**났다. 즉 bfcache는 문제의 원인이 아니라 **오히려 정상 동작에 필요한 메커니즘**이었다.
+
+---
+
+## 3. 원인 분석 과정
+
+### 3-1. `pageshow` 이벤트가 잡히지 않는다
+
+bfcache 복원을 감지하는 표준 방법은 `pageshow` 이벤트의 `e.persisted` 플래그다. 이를 확인하는 가드 훅을 넣어 디버깅했다.
+
+```typescript
+function useBfcacheGuard() {
+  console.log('useBfcacheGuard')
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      console.log('onPageShow', e.persisted)
+      if (e.persisted) window.location.reload()
+    }
+    window.addEventListener('pageshow', onPageShow)
+    return () => window.removeEventListener('pageshow', onPageShow)
+  }, [])
+}
+```
+
+확인 결과 단서들이 서로 모순되어 보였다.
+
+| 확인 항목 | 결과 |
+|---|---|
+| 최초 접근 시 `useBfcacheGuard` 로그 | 찍힘 (훅은 정상 호출) |
+| `'use client'` 지시어 | 있음 |
+| 뒤로가기 시 `onPageShow` 로그 | 안 찍힘 |
+| 뒤로가기 시 `useBfcacheGuard` 재실행 | 안 됨 |
+| cleanup 제거 후 재시도 | 여전히 `onPageShow` 안 찍힘 |
+| 콘솔에 RAW `pageshow` 리스너 직접 등록 후 뒤로가기 | 안 찍힘 |
+
+`pageshow`가 어떤 방식으로도 잡히지 않아 한동안 원인을 잘못 짚었다.
+
+### 3-2. 결정적 단서 — DevTools Back/forward cache 진단
+
+크롬 DevTools → **Application 탭 → Back/forward cache → Test back/forward cache** 를 실행하자 원인이 드러났다.
+
+> **Pages with WebSocket cannot enter back/forward cache.**
+
+이 페이지는 처음부터 **bfcache에 진입조차 못 하고 있었다.** 그래서 `pageshow(persisted: true)`가 영원히 발생하지 않았고, 디버깅 단서가 전부 모순되어 보였던 것이다.
+
+---
+
+## 4. 진짜 원인
+
+**개발 모드(`next dev`)의 HMR(Hot Module Replacement) websocket 연결이 bfcache를 차단**하고, 그 결과 dev 환경에서만 뒤로가기 복원이 정상적으로 이루어지지 않았다.
+
+흐름을 정리하면:
+
+- 열려있는 websocket 연결이 있으면 브라우저는 해당 페이지를 bfcache에 저장하지 않는다. (네트워크 탭의 `webpack-hmr ... websocket 101`이 그 연결)
+- dev 모드에서는 bfcache를 못 쓰므로, 외부 OAuth 도메인에서 뒤로가기로 돌아올 때 페이지가 bfcache 스냅샷으로 복원되지 못한다.
+- 이때 dev 환경 특유의 복원 경로에서 버튼 DOM은 다시 그려지지만 **React 이벤트 핸들러가 깨끗하게 재연결되지 않아** `onClick`이 죽은 상태가 된다.
+- 반면 프로덕션에서는 bfcache가 정상 작동하여 **DOM + JS 상태 + 이벤트 핸들러를 통째로** 얼렸다가 그대로 복원한다. 핸들러가 살아있는 채로 복원되므로 버튼이 멀쩡하다.
+
+> 참고: dev 모드에서 이벤트 핸들러가 재연결되지 않는 정확한 내부 메커니즘은 Next.js 버전, Turbopack 사용 여부 등 환경에 따라 다를 수 있다. 여기서는 "dev에서만 재현되는 현상"으로 보는 것이 정확하며, 단일 코드 한 줄을 원인으로 단정하기는 어렵다.
+
+그동안 본 모든 모순된 단서는 "dev 환경에서는 HMR websocket 때문에 bfcache가 비활성"이라는 한 가지 사실로 전부 설명된다.
+
+| 관측된 현상 | 실제 의미 |
+|---|---|
+| `onPageShow` 안 찍힘 | dev 모드는 websocket 때문에 bfcache 진입 불가 → 복원 이벤트 자체가 없음 |
+| 뒤로가기 시 가드 훅 재실행 안 됨 | full load도 bfcache 복원도 아닌 dev 환경 특유의 복원 경로 |
+| RAW 리스너도 안 잡힘 | `pageshow` 이벤트 자체가 발생하지 않음 |
+| 프로덕션에서는 정상 | HMR이 없어 bfcache가 정상 작동, 핸들러까지 복원됨 |
+
+---
+
+## 5. 해결 방안
+
+### 핵심: 프로덕션 환경에서 검증할 것
+
+이 현상은 **dev 모드 전용**이다. `next build && next start` 또는 실제 배포 환경에서는 HMR websocket이 없어 bfcache가 정상 작동하고, 버튼도 정상 동작한다. 따라서 별도의 코드 수정 없이도 실제 사용자에게는 문제가 없다.
+
+### `useBfcacheGuard`는 사실상 불필요할 가능성
+
+`useBfcacheGuard`(bfcache 복원 시 `reload()`)는 dev 모드에서는 bfcache 자체가 안 되니 동작할 기회가 없고, 프로덕션에서는 bfcache가 이미 핸들러까지 정상 복원하므로 굳이 새로고침할 필요가 없다. 즉 **양쪽 환경 모두에서 이 훅이 실질적인 역할을 하지 않을 가능성이 높다.**
+
+확인 방법: 프로덕션 빌드에서 `useBfcacheGuard`를 제거하고도 뒤로가기 후 버튼이 정상 동작하는지 테스트한다. 정상이라면 이 훅은 제거해도 무방하다.
+
+### 방어가 꼭 필요하다면
+
+프로덕션에서도 만일을 대비해 방어 코드를 두고 싶다면, bfcache 복원 시 페이지를 강제로 새로 그리는 가드를 유지할 수 있다. 단, 이 경우 사용자가 OAuth를 취소하고 돌아왔을 때 화면 깜빡임이 생긴다는 점을 감수해야 한다.
+
+```typescript
+'use client'
+
+import { useEffect } from 'react'
+
+function useBfcacheGuard() {
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) window.location.reload()
+    }
+    window.addEventListener('pageshow', onPageShow)
+    return () => window.removeEventListener('pageshow', onPageShow)
+  }, [])
+}
+```
+
+---
+
+## 6. 결과
+
+- 문제는 **개발 환경(`next dev`)에서만 재현되던 현상**이었고, 원본 코드 로직 자체는 멀쩡했다.
+- 프로덕션 빌드에서는 bfcache가 정상 작동하여 로그인 버튼이 의도대로 동작함을 확인했다.
+- 원인은 dev 모드의 HMR websocket이 bfcache 진입을 막아, 뒤로가기 복원 시 이벤트 핸들러가 재연결되지 않았던 것.
+- 실제 배포 환경에는 영향이 없으므로 필수 수정 사항은 아니다. `useBfcacheGuard`는 검증 후 제거를 검토할 수 있다.
+
+---
+
+## 7. 핵심 요약
+
+- **증상**: OAuth 페이지에서 뒤로가기로 돌아오면 로그인 버튼의 `onClick`이 동작하지 않음. (원본 코드에는 `loading`/`disabled` 같은 상태가 전혀 없었음)
+- **환경 차이**: dev 모드에서는 고장, 프로덕션에서는 정상. → bfcache가 **있어야** 정상 동작하는 구조.
+- **실제 원인**: 개발 모드의 **HMR websocket이 bfcache 진입을 차단** → dev에서만 뒤로가기 복원 시 React 이벤트 핸들러가 재연결되지 않아 버튼이 죽음. 프로덕션은 bfcache가 핸들러까지 통째로 복원하므로 정상.
+- **검증 방법**: DevTools → Application → **Back/forward cache → Test** 로 차단 사유 확인 (`Pages with WebSocket cannot enter back/forward cache`).
+- **해결**: 별도 수정 불필요. dev 전용 현상이며 프로덕션에서 정상. `useBfcacheGuard`는 실효성이 없을 가능성이 높아 제거 검토 가능.
+- **교훈**:
+  - bfcache 관련 동작은 **반드시 프로덕션 빌드에서 검증**할 것. dev 모드의 HMR websocket이 bfcache를 막아 디버깅을 오도한다.
+  - `disk cache`(HTTP 캐시)와 `bfcache`(메모리 스냅샷)는 별개다. 네트워크 탭의 `disk cache` 표기는 bfcache 복원의 증거가 아니다.
+  - 단서가 서로 모순될 땐 추측 대신 **DevTools의 전용 진단 도구**(Application → Back/forward cache)로 직접 측정하는 것이 가장 빠르다.
+  - 증상을 일으킨 **실제 코드를 먼저 확인**하고 진단할 것. 코드를 보지 않고 세운 가설(`loading` 박제 등)은 틀리기 쉽다.
