@@ -48,7 +48,7 @@ export default async function BlogPostPage({ params }: PageProps) {
   });
 
   return (
-    <div className="min-h-screen bg-zinc-50 font-sans dark:bg-zinc-950">
+    <div className="flex-1 bg-zinc-50 font-sans dark:bg-zinc-950">
       <article className="mx-auto max-w-3xl px-6 py-16">
         <header className="mb-10">
           <h1 className="mb-2 text-4xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
