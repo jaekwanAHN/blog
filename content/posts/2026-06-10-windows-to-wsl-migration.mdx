@@ -1,0 +1,48 @@
+---
+title: "Windows 프로젝트를 WSL로 옮기기"
+date: "2026-06-10"
+description: "rsync로 Windows에 있던 프로젝트를 WSL 홈으로 복사하고, node와 git 상태를 검증해 제대로 옮겨졌는지 확인한다."
+tags: ["WSL", "rsync", "pnpm", "Node.js", "tip"]
+---
+
+## 소개
+
+Windows에서 작업하던 프로젝트를 WSL 환경으로 옮길 때, `/mnt/e/...` 같은 Windows 드라이브 경로에 둔 채로 작업하면 파일 I/O가 느리고 `node_modules`도 깨지기 쉽다. WSL 리눅스 파일시스템(`~/projects`) 안으로 소스를 복사한 뒤, 의존성은 WSL에서 새로 설치하는 것이 깔끔하다.
+
+## 옮기기
+
+```bash
+rsync -a --exclude node_modules --exclude .next \
+  /mnt/e/solo_project/blog/ ~/projects/blog/
+cd ~/projects/blog
+pnpm install
+```
+
+- `rsync -a` — 아카이브 모드. 권한·타임스탬프·심볼릭 링크를 그대로 보존하면서 디렉터리를 재귀 복사한다.
+- `--exclude node_modules` — Windows에서 설치된 `node_modules`는 OS별 네이티브 바이너리가 섞여 있어 WSL에서 그대로 쓰면 깨진다. 복사에서 제외하고 WSL에서 새로 설치한다.
+- `--exclude .next` — Next.js 빌드 캐시도 환경에 종속적이라 옮길 필요가 없다. 제외하면 복사도 빨라진다.
+- 소스 경로 끝의 `/`(`blog/`) — `rsync`에서 소스 끝의 슬래시는 "디렉터리 안의 내용을 대상에 넣는다"는 의미다. 슬래시를 빼면 `~/projects/blog/blog/`처럼 한 단계 더 들어가니 주의한다.
+- `pnpm install` — 제외했던 의존성을 WSL 환경에 맞춰 새로 설치한다. `pnpm-lock.yaml`을 함께 옮겼다면 동일한 버전으로 재현된다.
+
+## 검증
+
+복사가 끝났다고 바로 작업에 들어가지 말고, 옮긴 결과가 원본과 같은 상태인지 확인한다.
+
+```bash
+cd ~/projects/blog
+git status             # 깨끗하거나, 옮기기 전과 같은 상태인지
+git log --oneline -3   # 커밋 히스토리가 따라왔는지
+which node             # /home/... 인지 (/mnt/c/ 아님)
+pnpm dev               # 실제로 도는지
+```
+
+각 명령이 확인하는 것은 다음과 같다.
+
+- `git status` — `.git` 디렉터리까지 통째로 복사됐다면 워킹 트리 상태가 옮기기 전과 동일해야 한다. 의도치 않게 빠지거나 변경된 파일이 없는지 본다.
+- `git log --oneline -3` — 커밋 히스토리가 그대로 따라왔는지 확인한다. 최근 커밋 해시와 메시지가 원본과 일치하면 정상이다.
+- `which node` — 가장 중요한 확인이다. 결과가 `/home/...` 아래(예: `/home/ggstork/.nvm/...`)면 WSL에 설치한 Node를 쓰는 것이고, `/mnt/c/...`로 나오면 **Windows의 Node가 PATH에 잡힌 것**이다. 이 경우 성능 이점이 사라지고 경로 문제가 생기므로, WSL에 Node를 따로 설치하고 PATH를 정리해야 한다.
+- `pnpm dev` — 마지막으로 개발 서버가 실제로 뜨는지 확인한다. 여기까지 통과하면 이전이 성공한 것이다.
+
+## 마무리
+
+소스는 `rsync`로 보존 복사하고, 환경 종속적인 `node_modules`·`.next`는 제외한 뒤 WSL에서 새로 설치한다. 그리고 `which node`로 실행 주체가 WSL 쪽인지 반드시 확인하면, Windows에서 WSL로의 이사가 깔끔하게 끝난다.

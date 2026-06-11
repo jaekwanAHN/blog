@@ -1,0 +1,37 @@
+---
+title: "WSL에서 Git 브랜치를 프롬프트에 표시하기"
+date: "2026-06-05"
+description: "bash PS1 설정으로 현재 브랜치를 항상 보이게 해 git branch를 반복 입력하지 않는다."
+tags: ["WSL", "Git", "bash", "tip"]
+---
+
+## 소개
+
+WSL에서 작업할 때마다 `git branch`를 쳐서 현재 브랜치를 확인하는 일이 잦다. 프롬프트에 브랜치 이름을 붙여 두면 터미널만 봐도 위치를 바로 알 수 있다.
+
+## 설정 방법
+
+아래 명령을 한 번 실행하면 `~/.bashrc`에 PS1 설정이 추가된다.
+
+```bash
+echo "PS1='\u@\h:\w\$(git branch 2>/dev/null | grep \"^*\" | sed \"s/* / (/;s/$/)/\") \$ '" >> ~/.bashrc
+source ~/.bashrc
+```
+
+- `\u@\h:\w` — 사용자, 호스트, 현재 경로
+- `$(git branch ...)` — Git 저장소 안이면 현재 브랜치를 `(브랜치명)` 형태로 표시
+- Git 저장소가 아니면 브랜치 부분은 비워 둔다
+
+## 적용 결과
+
+프롬프트가 대략 이런 형태가 된다.
+
+```txt
+user@hostname:~/project (main) $
+```
+
+`main` 대신 `feature/login`처럼 체크아웃된 브랜치가 표시된다.
+
+## 마무리
+
+브랜치를 확인할 때마다 `git branch`를 입력할 필요가 없어져서, WSL에서 Git 작업할 때 작은 불편 하나가 줄어든다.
