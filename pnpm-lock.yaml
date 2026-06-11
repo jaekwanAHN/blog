@@ -29,11 +29,17 @@ dependencies:
   shiki:
     specifier: ^4.0.2
     version: 4.2.0
+  unified:
+    specifier: ^11.0.5
+    version: 11.0.5
 
 devDependencies:
   '@tailwindcss/postcss':
     specifier: ^4
     version: 4.3.0
+  '@types/mdx':
+    specifier: ^2.0.14
+    version: 2.0.14
   '@types/node':
     specifier: ^20
     version: 20.19.42
@@ -1041,7 +1047,6 @@ packages:
 
   /@types/mdx@2.0.14:
     resolution: {integrity: sha512-T48PeuJtvLosNTPVhfnIp3i/n3a4g4Bad7YCq5k64D4u7NwDrAotikQ+5+sjtUvBmxCMlbo3dVL+C2dP0rWHzg==}
-    dev: false
 
   /@types/ms@2.1.0:
     resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
