@@ -5,6 +5,7 @@ import type { Pluggable } from "unified";
 import { MDXRemote } from "next-mdx-remote/rsc";
 import { getPostBySlug, getAllSlugs, mdxRehypePlugins } from "@/lib/mdx";
 import { mdxComponents } from "@/components/mdx-components";
+import { TagLink } from "@/components/tag-link";
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -63,11 +64,8 @@ export default async function BlogPostPage({ params }: PageProps) {
           {frontmatter.tags.length > 0 && (
             <ul className="mt-2 flex flex-wrap gap-2" aria-label="태그">
               {frontmatter.tags.map((tag) => (
-                <li
-                  key={tag}
-                  className="rounded-full bg-zinc-200 px-2.5 py-0.5 text-xs font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300"
-                >
-                  {tag}
+                <li key={tag}>
+                  <TagLink tag={tag} />
                 </li>
               ))}
             </ul>
