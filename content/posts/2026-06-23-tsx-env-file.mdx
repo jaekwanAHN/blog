@@ -1,0 +1,87 @@
+---
+title: "tsx 스크립트에서 .env 자동 로드하기 (dotenv 없이, CI 안전)"
+date: "2026-06-23"
+description: "Node 내장 --env-file-if-exists 플래그로 로컬에서는 .env를 자동 로드하고 CI에서는 무해하게 무시한다."
+tags: ["Node.js", "tsx", "dotenv", "CI"]
+---
+
+## 문제
+
+크롤러 스크립트를 `package.json`에서 이렇게 실행하고 있었다.
+
+```json
+"crawl:standings": "tsx scripts/crawler/fetch-standings.ts"
+```
+
+스크립트 안에서는 `process.env.SUPABASE_URL`을 읽는데, 로컬에서 `pnpm crawl:standings`를 돌리면 이렇게 죽는다.
+
+```txt
+[standings] missing env: SUPABASE_URL
+```
+
+`.env` 파일은 분명히 있는데도 그렇다.
+
+## 원인
+
+`.env`를 읽어 `process.env`에 채워 넣는 주체가 아무도 없기 때문이다.
+
+- **Next.js 앱**은 프레임워크가 `.env`를 자동 로드한다 → 그래서 dev 서버는 잘 된다.
+- **tsx로 직접 실행하는 스크립트**는 그런 자동 로딩이 없다 → `process.env`에는 셸이 넘겨준 값만 있다.
+- **CI(GitHub Actions)**는 Secrets가 진짜 환경변수로 주입되므로 `.env` 없이도 동작한다 → 그래서 로컬에서만 문제가 드러난다.
+
+즉 앱에서 되니까 당연히 될 거라 생각하지만, tsx 스크립트는 별개다.
+
+## 해결: Node 내장 --env-file 플래그
+
+`dotenv` 패키지를 깔지 않아도, Node가 시작할 때 파일을 파싱해 `process.env`에 넣어주는 플래그가 있다.
+
+```bash
+node --env-file=.env script.js
+```
+
+그런데 이걸 그대로 `package.json`에 박으면 **CI가 깨진다.** CI에는 `.env` 파일이 없어서, 파일을 못 찾으면 에러로 종료하기 때문이다.
+
+여기서 핵심이 되는 변형이 `--env-file-if-exists`다. 둘의 차이는 "파일이 없을 때"의 동작뿐이다.
+
+- `--env-file=.env` — 파일이 있으면 로드, **없으면 에러로 종료**
+- `--env-file-if-exists=.env` — 파일이 있으면 로드, **없으면 조용히 무시(no-op)**
+
+`--env-file-if-exists`는 양쪽 환경에서 모두 안전하다.
+
+- **로컬**: `.env` 존재 → 로드 → 스크립트가 그냥 동작
+- **CI**: `.env` 없음 → 무시 → 기존처럼 Secrets 환경변수 사용
+
+## 적용
+
+`package.json` 스크립트를 이렇게 바꾼다.
+
+```json
+"crawl:standings": "node --env-file-if-exists=.env --import tsx scripts/crawler/fetch-standings.ts"
+```
+
+`tsx script.ts` 가 `node --import tsx script.ts` 로 바뀐 점에 주의한다.
+
+- `--env-file-if-exists`는 **Node 플래그**라서 `node`를 직접 호출해야 한다.
+- `--import tsx`로 tsx를 로더로 붙여 TypeScript 실행을 그대로 유지한다(기존 `tsx` 직접 실행과 동치).
+
+이제 로컬에서는 별도 설정 없이 `pnpm crawl:standings`가 `.env`를 읽어 동작하고, CI에서는 아무것도 바뀌지 않는다.
+
+## 주의: Node 버전
+
+`--env-file-if-exists`는 **Node 20.12+ / 22+**에서 쓸 수 있다.
+
+- 로컬 Node 버전이 충분한지 (`node --version`)
+- CI 워크플로의 `setup-node` 버전이 20.12 이상인지
+
+둘 다 확인하고 적용하자. 버전이 낮으면 플래그를 모른다고 에러가 난다.
+
+## 대안
+
+- **dotenv 패키지**: 각 스크립트 상단에 `import "dotenv/config"`. 의존성이 하나 늘지만 Node 버전과 무관하다.
+- **수동 실행**: 매번 `node --env-file=.env --import tsx ...`로 직접. 변경은 없지만 불편하다.
+
+의존성을 안 늘리면서 한 줄로 끝내고 싶고 Node 버전이 받쳐준다면 `--env-file-if-exists`가 가장 깔끔하다.
+
+## 마무리
+
+"앱에서 되니까 스크립트에서도 되겠지"가 함정이었다. tsx 직접 실행은 `.env` 자동 로딩이 없다는 걸 기억하고, 내장 플래그 한 줄로 로컬과 CI를 모두 안전하게 맞추면 된다.
