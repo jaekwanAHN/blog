@@ -1,0 +1,222 @@
+---
+title: "자바스크립트로 우선순위 큐 직접 구현하기 (class 기반 이진 힙)"
+date: "2026-06-29"
+description: "내장 우선순위 큐가 없는 JavaScript에서 class로 이진 힙을 만들고, 다익스트라 같은 알고리즘에 적용한다."
+tags: ["JavaScript", "algorithm", "자료구조", "힙", "우선순위 큐"]
+---
+
+## 우선순위 큐가 필요한 순간
+
+일반 큐(queue)는 먼저 들어온 게 먼저 나온다(FIFO). 그런데 알고리즘 문제를 풀다 보면 "들어온 순서"가 아니라 **"가장 작은(혹은 가장 큰) 값"을 먼저 꺼내야** 하는 상황이 자주 나온다.
+
+- 다익스트라 최단 경로 — 현재까지 거리가 가장 짧은 노드를 먼저 처리
+- 최소 비용 신장 트리(프림) — 가장 가벼운 간선을 먼저 선택
+- "가장 작은 K개", "병합 정렬된 리스트" 류의 문제
+
+이때 쓰는 게 **우선순위 큐(priority queue)** 다. 꺼낼 때마다 우선순위가 가장 높은 원소가 나온다.
+
+## 왜 직접 만들어야 하나
+
+문제는 **JavaScript에는 우선순위 큐가 내장돼 있지 않다**는 것이다. Java의 `PriorityQueue`, C++의 `priority_queue` 같은 게 없다.
+
+그래서 흔히 배열 + 정렬로 흉내 낸다.
+
+```js
+const arr = [];
+arr.push(5);
+arr.sort((a, b) => a - b); // 매번 정렬
+const min = arr.shift();    // 맨 앞 꺼내기
+```
+
+동작은 하지만 비효율적이다.
+
+- `sort`는 매 삽입마다 `O(n log n)`
+- `shift`는 맨 앞을 빼면서 나머지를 한 칸씩 당겨 `O(n)`
+
+원소가 많아지면 이 비용이 누적돼 시간 초과로 이어진다. 우선순위 큐의 정석 구현인 **이진 힙(binary heap)** 을 쓰면 삽입과 삭제를 모두 `O(log n)`에 끝낼 수 있다.
+
+## 이진 힙의 핵심 아이디어
+
+이진 힙은 "부모가 자식보다 항상 작다(최소 힙)"는 규칙을 지키는 **완전 이진 트리**다. 핵심은 이 트리를 **트리 노드 객체 없이 배열 하나로 표현**한다는 점이다.
+
+인덱스 `i`를 기준으로 부모·자식 위치가 수식으로 정해진다.
+
+```txt
+부모   : (i - 1) / 2  (내림)
+왼자식 : i * 2 + 1
+오른자식: i * 2 + 2
+```
+
+루트(가장 작은 값)는 항상 `heap[0]`에 있다. 삽입은 끝에 넣고 위로 올리며(bubble up), 삭제는 루트를 빼고 마지막 원소를 루트에 둔 뒤 아래로 내린다(bubble down). 트리 높이가 `log n`이라 두 연산 모두 `O(log n)`이다.
+
+## class로 구현하기
+
+비교 함수(`compare`)를 생성자에서 받아 **최소 힙·최대 힙·객체 우선순위를 한 클래스로** 처리하도록 만든다. `compare(a, b)`가 음수면 `a`가 더 높은 우선순위(먼저 나옴)라는 약속이다 — `Array.prototype.sort`와 같은 규칙이라 익숙하다.
+
+```js
+class PriorityQueue {
+  constructor(compare = (a, b) => a - b) {
+    this.heap = [];
+    this.compare = compare;
+  }
+
+  get size() {
+    return this.heap.length;
+  }
+
+  isEmpty() {
+    return this.heap.length === 0;
+  }
+
+  peek() {
+    return this.heap[0];
+  }
+
+  push(value) {
+    this.heap.push(value);
+    this.#bubbleUp(this.heap.length - 1);
+  }
+
+  pop() {
+    if (this.heap.length === 0) return undefined;
+    const top = this.heap[0];
+    const last = this.heap.pop();
+    // 마지막 원소를 루트로 올린 뒤 아래로 내려 자리를 찾는다
+    if (this.heap.length > 0) {
+      this.heap[0] = last;
+      this.#bubbleDown(0);
+    }
+    return top;
+  }
+
+  #bubbleUp(index) {
+    while (index > 0) {
+      const parent = (index - 1) >> 1; // (index - 1) / 2
+      if (this.compare(this.heap[index], this.heap[parent]) >= 0) break;
+      this.#swap(index, parent);
+      index = parent;
+    }
+  }
+
+  #bubbleDown(index) {
+    const n = this.heap.length;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = index * 2 + 2;
+      let target = index;
+
+      if (left < n && this.compare(this.heap[left], this.heap[target]) < 0) {
+        target = left;
+      }
+      if (right < n && this.compare(this.heap[right], this.heap[target]) < 0) {
+        target = right;
+      }
+      if (target === index) break;
+
+      this.#swap(index, target);
+      index = target;
+    }
+  }
+
+  #swap(i, j) {
+    [this.heap[i], this.heap[j]] = [this.heap[j], this.heap[i]];
+  }
+}
+```
+
+`#bubbleUp`, `#bubbleDown`, `#swap`은 `#` 프라이빗 메서드로 두어 외부에서 힙 불변식을 깨지 못하게 했다.
+
+## 사용법
+
+기본은 최소 힙이다.
+
+```js
+const pq = new PriorityQueue();
+pq.push(5);
+pq.push(1);
+pq.push(3);
+
+pq.pop(); // 1
+pq.pop(); // 3
+pq.pop(); // 5
+```
+
+비교 함수만 바꾸면 최대 힙이 된다.
+
+```js
+const maxPQ = new PriorityQueue((a, b) => b - a);
+maxPQ.push(5);
+maxPQ.push(1);
+maxPQ.push(3);
+maxPQ.pop(); // 5
+```
+
+객체를 우선순위로 정렬할 수도 있다.
+
+```js
+// dist가 작은 것부터 꺼낸다
+const pq = new PriorityQueue((a, b) => a.dist - b.dist);
+pq.push({ node: 2, dist: 7 });
+pq.push({ node: 1, dist: 3 });
+pq.peek(); // { node: 1, dist: 3 }
+```
+
+## 실전: 다익스트라 최단 경로
+
+우선순위 큐가 가장 빛나는 예시다. 인접 리스트 `graph[node] = [{ to, weight }, ...]` 형태의 그래프에서 출발점부터 각 노드까지의 최단 거리를 구한다.
+
+```js
+function dijkstra(graph, start) {
+  const dist = new Array(graph.length).fill(Infinity);
+  dist[start] = 0;
+
+  // 거리가 짧은 노드를 먼저 꺼낸다
+  const pq = new PriorityQueue((a, b) => a.dist - b.dist);
+  pq.push({ node: start, dist: 0 });
+
+  while (!pq.isEmpty()) {
+    const { node, dist: d } = pq.pop();
+
+    // 이미 더 짧은 경로로 확정된 노드면 건너뛴다
+    if (d > dist[node]) continue;
+
+    for (const { to, weight } of graph[node]) {
+      const next = d + weight;
+      if (next < dist[to]) {
+        dist[to] = next;
+        pq.push({ node: to, dist: next });
+      }
+    }
+  }
+
+  return dist;
+}
+```
+
+```js
+// 0 → 1(4), 0 → 2(1), 2 → 1(2), 1 → 3(1), 2 → 3(5)
+const graph = [
+  [{ to: 1, weight: 4 }, { to: 2, weight: 1 }],
+  [{ to: 3, weight: 1 }],
+  [{ to: 1, weight: 2 }, { to: 3, weight: 5 }],
+  [],
+];
+
+dijkstra(graph, 0); // [0, 3, 1, 4]
+```
+
+`0 → 2 → 1 → 3`이 거리 4로 가장 짧다. 매 단계에서 "가장 가까운 노드"를 `O(log n)`에 꺼내기 때문에, 정렬 배열로 흉내 낼 때보다 훨씬 빠르다.
+
+여기서 `if (d > dist[node]) continue;`가 중요하다. 힙에는 같은 노드가 여러 거리로 중복해서 들어갈 수 있는데, 이미 더 짧은 거리로 처리된 항목은 무시해야 한다. 우선순위 큐 기반 다익스트라의 정석 패턴이다.
+
+## 복잡도 정리
+
+| 연산 | 정렬 배열 | 이진 힙 |
+|------|-----------|---------|
+| 삽입(push) | `O(n log n)` 또는 `O(n)` | `O(log n)` |
+| 최솟값 삭제(pop) | `O(n)` | `O(log n)` |
+| 최솟값 확인(peek) | `O(1)` | `O(1)` |
+
+## 마무리
+
+JavaScript엔 우선순위 큐가 없지만, 배열 하나와 인덱스 수식만으로 이진 힙을 만들 수 있다. 비교 함수를 주입하는 형태로 클래스를 한 번 짜두면 최소 힙·최대 힙·객체 우선순위를 모두 커버하고, 다익스트라·프림·K번째 원소 류 문제에 그대로 재사용할 수 있다. 핵심은 두 가지다 — **트리를 배열로 표현한다**, 그리고 **삽입·삭제 시 한 줄(부모/자식)만 따라 올라가고 내려간다**.
