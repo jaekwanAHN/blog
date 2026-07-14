@@ -55,8 +55,11 @@ export const mdxComponents: MDXComponents = {
     </pre>
   ),
   code: ({ children, className, ...props }) => {
-    const isInline = !className;
-    if (isInline) {
+    // rehype-pretty-code는 블럭 코드에 className 대신 data-language 속성을 붙인다.
+    // className(language-*) 체크는 highlighter를 거치지 않은 블럭 코드 대비 보조 조건.
+    const isBlock =
+      "data-language" in props || /\blanguage-/.test(className ?? "");
+    if (!isBlock) {
       return (
         <code
           className="rounded bg-zinc-200 px-1.5 py-0.5 font-mono text-sm dark:bg-zinc-700"
@@ -66,8 +69,10 @@ export const mdxComponents: MDXComponents = {
         </code>
       );
     }
+    // w-max: 가장 긴 라인 폭만큼 늘어나 스크롤 끝까지 배경/하이라이트 유지
+    // min-w-full: 짧은 코드일 때 pre 폭을 채움
     return (
-      <code className={className ?? ""} {...props}>
+      <code className={`w-max min-w-full ${className ?? ""}`} {...props}>
         {children}
       </code>
     );
