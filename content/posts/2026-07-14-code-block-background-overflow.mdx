@@ -1,0 +1,96 @@
+---
+title: "코드블럭을 가로 스크롤하면 배경이 끊기는 이유"
+date: "2026-07-14"
+description: "rehype-pretty-code 블럭 코드가 인라인 코드로 오판되어 배경이 스크롤 폭을 못 따라가던 문제 — 잘못된 판별 조건과 스크롤 컨테이너 안 grid 요소의 width를 추적한 기록"
+tags: ["nextjs", "mdx", "rehype-pretty-code", "css", "tailwind"]
+---
+
+경험을 토대로 AI를 활용하여 작성한 글 입니다.
+
+## 증상
+
+블로그 포스트의 코드블럭에서 긴 코드 라인을 가로로 스크롤하면, 어느 지점부터 코드 뒤의 배경이 뚝 끊기고 글자만 박스 밖으로 빠져나간 것처럼 보였다. 스크롤이 없는 짧은 코드블럭은 멀쩡했다.
+
+처음에는 `figure` 엘리먼트나 `pre`의 `overflow-x-auto` 문제인 줄 알았다. 하지만 렌더링된 HTML을 열어 보니 원인은 전혀 다른 곳에 있었다.
+
+## 렌더링된 HTML이 말해준 것
+
+```html
+<pre class="overflow-x-auto rounded-lg ... p-4" data-language="ts">
+  <code
+    class="rounded bg-zinc-200 px-1.5 py-0.5 font-mono text-sm dark:bg-zinc-700"
+    data-language="ts"
+    style="display:grid"
+  >
+```
+
+코드블럭 **내부의** `code` 엘리먼트에 인라인 코드용 클래스(`bg-zinc-200`, `rounded`, `px-1.5`)가 붙어 있었다. 문장 중간의 `이런 코드`에 쓰라고 만든 스타일이 블럭 코드에 통째로 적용된 것이다.
+
+## 원인 1 — 인라인 판별 조건이 틀렸다
+
+MDX 컴포넌트 매핑에서 인라인/블럭 코드를 이렇게 구분하고 있었다.
+
+```tsx
+code: ({ children, className, ...props }) => {
+  const isInline = !className; // ← 문제의 판별
+  ...
+}
+```
+
+`className`이 없으면 인라인이라는 논리다. 일반적인 마크다운 파이프라인에서는 블럭 코드에 `language-ts` 같은 클래스가 붙으니 그럴듯해 보인다.
+
+하지만 **rehype-pretty-code는 블럭 `code`에 `className`을 주지 않는다.** 대신 `data-language`, `data-theme` 같은 데이터 속성을 붙인다. 그래서 `!className` 판별로는 모든 블럭 코드가 인라인으로 오판되고, 인라인용 배경이 그대로 씌워졌다.
+
+## 원인 2 — 스크롤 컨테이너 안의 grid는 보이는 만큼만 넓다
+
+배경이 붙은 것 자체는 "이중 배경" 정도의 문제다. 그런데 왜 스크롤하면 배경이 *끊길까*?
+
+rehype-pretty-code는 라인 하이라이트를 위해 `code`에 `style="display:grid"`를 인라인으로 넣는다. 여기서 CSS의 함정이 등장한다.
+
+- `pre`는 `overflow-x-auto`인 스크롤 컨테이너다.
+- 그 안의 `code`(grid)의 width는 **스크롤 가능한 전체 폭이 아니라, pre의 보이는 콘텐츠 폭**까지만 잡힌다.
+- 긴 코드 라인은 `code` 박스를 넘어 overflow되지만, `code`의 배경은 자기 박스까지만 칠해진다.
+
+즉 배경 박스는 화면 폭에서 멈춰 있는데 글자는 그 너머까지 이어지니, 스크롤하는 순간 "배경보다 코드가 길다"가 눈에 보이게 된다. `pre`의 오른쪽 `p-4` 패딩이 스크롤 끝에서 사라져 코드가 테두리에 딱 붙는 것도 같은 이유다.
+
+## 수정
+
+판별을 실제 마크업 계약에 맞추고, 블럭 코드의 폭을 콘텐츠에 맞게 늘렸다.
+
+```tsx
+code: ({ children, className, ...props }) => {
+  // rehype-pretty-code는 블럭 코드에 className 대신 data-language를 붙인다
+  const isBlock =
+    "data-language" in props || /\blanguage-/.test(className ?? "");
+
+  if (!isBlock) {
+    // 인라인 코드: 기존 스타일 유지
+    return (
+      <code className="rounded bg-zinc-200 px-1.5 py-0.5 font-mono text-sm dark:bg-zinc-700" {...props}>
+        {children}
+      </code>
+    );
+  }
+
+  // 블럭 코드: 배경 없음 + 스크롤 폭만큼 늘어나게
+  return (
+    <code className={`w-max min-w-full ${className ?? ""}`} {...props}>
+      {children}
+    </code>
+  );
+},
+```
+
+핵심은 세 가지다.
+
+1. **`data-language`로 판별** — rehype-pretty-code가 블럭 코드에 실제로 붙이는 속성을 기준으로 삼는다. `language-*` 클래스 체크는 highlighter를 거치지 않는 경우를 위한 보조 조건.
+2. **블럭 코드의 배경 제거** — 배경은 이미 `pre`가 담당하고 있다(`keepBackground: false` 설정으로 테마 배경도 꺼 둔 상태). 배경 주체를 하나로 통일한다.
+3. **`w-max min-w-full`** — `w-max`로 가장 긴 라인 폭만큼 박스를 늘려 라인 하이라이트와 패딩이 스크롤 끝까지 이어지게 하고, `min-w-full`로 짧은 코드일 때도 `pre` 폭을 채운다.
+
+`display:grid`는 인라인 style이라 Tailwind 클래스로 덮을 수 없지만, 덮을 필요도 없다. 라인 하이라이트가 전체 폭을 차지하려면 grid가 필요하고, `w-max min-w-full`은 display와 무관하게 폭만 제어한다.
+
+## 배운 것
+
+- **증상이 CSS여도 원인은 로직일 수 있다.** 배경이 끊기는 시각적 버그였지만, 뿌리는 인라인/블럭 판별 조건의 잘못된 전제였다. CSS로 배경만 덮어썼다면 오판 로직이 남아 언젠가 다른 모습으로 재발했을 것이다.
+- **플러그인이 만드는 실제 마크업을 확인하자.** "블럭 코드에는 `language-*` 클래스가 붙는다"는 통념은 파이프라인 구성에 따라 깨진다. `curl`로 렌더링 결과를 직접 열어 본 것이 진단의 전부였다.
+- **스크롤 컨테이너 안의 블럭/grid 요소 width는 보이는 폭까지다.** 배경·보더가 스크롤 끝까지 이어져야 한다면 `width: max-content`(+ `min-width: 100%`)가 정석이다.
