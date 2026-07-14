@@ -1,0 +1,271 @@
+---
+title: "낙관적 업데이트를 적용했는데 왜 체크박스만 느릴까?"
+date: "2026-07-06"
+description: "TanStack Query 낙관적 업데이트가 멀쩡히 동작하는데도 UI가 느려 보였던 원인을 추적한 디버깅 기록"
+tags: ["react", "tanstack-query", "optimistic-update", "ux"]
+---
+
+경험을 토대로 AI를 활용하여 작성한 글 입니다.
+
+취업 준비 플래너 앱의 일간 태스크 화면에서 이상한 현상을 발견했다.
+
+태스크 카드의 체크박스를 클릭하면:
+
+- 카드 배경이 흐려지고 제목에 취소선이 생기는 건 **즉시** 반응하는데,
+- 정작 클릭한 **체크박스의 체크 표시만 한 박자 늦게** 나타났다.
+
+로컬 개발 환경에서도 체감될 정도였고, 네트워크가 느린 환경이라면 훨씬 어색했을 것이다. 완료 처리에는 TanStack Query의 낙관적 업데이트(optimistic update)를 이미 적용해둔 상태였기 때문에 더 이해가 가지 않았다. "낙관적 업데이트가 안 먹고 있나?"가 첫 번째 가설이었다.
+
+## 첫 가설: 낙관적 업데이트가 안 걸렸나?
+
+토글 mutation 코드를 다시 확인했다.
+
+```tsx
+export function useToggleTask(scope: TaskScope, date: Date) {
+  const queryClient = useQueryClient()
+  const targetDate = getTargetDateForScope(scope, date)
+
+  return useMutation({
+    mutationFn: async ({ id, is_completed }) => {
+      const { data } = await apiClient.patch<Task>(`/tasks/${id}`, {
+        is_completed,
+        completed_at: is_completed ? new Date().toISOString() : null,
+      })
+      return data
+    },
+    onMutate: async ({ id, is_completed }) => {
+      await queryClient.cancelQueries({
+        queryKey: taskKeys.byScope(scope, targetDate),
+      })
+      const previous = queryClient.getQueryData<Task[]>(
+        taskKeys.byScope(scope, targetDate)
+      )
+      queryClient.setQueryData<Task[]>(
+        taskKeys.byScope(scope, targetDate),
+        (old) =>
+          (old ?? []).map((task) =>
+            task.id === id ? { ...task, is_completed } : task
+          )
+      )
+      return { previous }
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(
+          taskKeys.byScope(scope, targetDate),
+          context.previous
+        )
+      }
+    },
+    // ...
+  })
+}
+```
+
+교과서적인 낙관적 업데이트 패턴이다. `onMutate`에서 진행 중인 조회를 취소하고, 이전 스냅샷을 저장한 뒤, 캐시의 `is_completed`를 즉시 뒤집는다. 실패하면 `onError`에서 스냅샷으로 롤백한다.
+
+혹시 읽기 쪽과 쓰기 쪽의 query key가 어긋나서 낙관적 업데이트가 다른 캐시에 쓰이고 있는 건 아닐까 의심했다. 낙관적 업데이트가 "적용됐는데 화면에 안 보이는" 사례의 단골 원인이 key 불일치이기 때문이다.
+
+```tsx
+// 읽기 (useTasks)
+useQuery({ queryKey: taskKeys.byScope(scope, targetDate), ... })
+
+// 쓰기 (useToggleTask의 onMutate)
+queryClient.setQueryData(taskKeys.byScope(scope, targetDate), ...)
+```
+
+둘 다 같은 key factory(`taskKeys.byScope`)에 같은 인자를 넣고 있었다. 일치했다.
+
+결정적으로, **카드의 스타일은 즉시 바뀌고 있었다.** 카드의 흐림 처리와 취소선은 낙관적으로 갱신된 `task.is_completed`를 읽어서 렌더링된 결과다. 즉 낙관적 업데이트는 정상 동작 중이었다. 데이터는 이미 즉시 바뀌고 있었던 것이다.
+
+그럼 대체 체크박스는 왜 늦는가?
+
+## 진짜 원인: 같은 데이터, 다른 렌더링 경로
+
+카드 컴포넌트를 다시 봤다.
+
+```tsx
+export function TaskCard({ task, onToggle, toggling, ... }) {
+  return (
+    <div
+      className={cn(
+        'flex gap-3 rounded-xl border bg-white p-4',
+        task.is_completed && 'bg-zinc-50/80 opacity-80' // ← 즉시 반응
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={task.is_completed} // ← 이것도 즉시 바뀐 값
+        disabled={toggling}         // ← 범인
+        onChange={(e) => onToggle(task.id, e.target.checked)}
+      />
+      <h3 className={cn(task.is_completed && 'line-through')}>
+        {task.title}
+      </h3>
+      {/* ... */}
+    </div>
+  )
+}
+```
+
+카드 스타일과 체크박스는 **똑같은 `task.is_completed`를 읽는다.** 데이터 관점에서는 둘 다 클릭 즉시 완료 상태가 된다. 유일한 차이는 체크박스에만 붙어 있는 `disabled={toggling}`이었다.
+
+`toggling`은 어디서 오는가. 페이지 훅에서 토글 진행 중인 태스크 id를 별도 state로 추적하고 있었다.
+
+```tsx
+const [togglingId, setTogglingId] = useState<string | null>(null)
+
+const handleToggle = (id: string, done: boolean) => {
+  setTogglingId(id)
+  toggleTask.mutate(
+    { id, is_completed: done },
+    { onSettled: () => setTogglingId(null) } // API 응답이 와야 해제
+  )
+}
+```
+
+흐름을 정리하면 이렇다.
+
+```txt
+체크박스 클릭
+→ setTogglingId(id)               : 체크박스 disabled 시작
+→ onMutate                        : 캐시 즉시 갱신 (낙관적 업데이트)
+→ 리렌더                          : 카드 스타일 즉시 변경 ✅
+                                    체크박스도 checked 됐지만 disabled 상태 (회색/흐림)
+→ ... API 왕복 대기 ...
+→ onSettled → setTogglingId(null) : disabled 해제
+→ 리렌더                          : 이제야 또렷한 체크 표시 ✅
+```
+
+체크 표시가 "늦게 나타난" 게 아니었다. **체크는 즉시 됐지만, disabled 상태의 체크박스가 브라우저/스타일에 의해 흐리게 렌더링되다가, API 응답이 와서 disabled가 풀리는 순간 또렷해진 것**이었다. 카드와 체크박스가 같은 데이터를 읽는데도 체크박스만 네트워크 왕복 시간에 묶여 있었던 셈이다.
+
+## 낙관적 업데이트와 disabled 가드는 철학이 충돌한다
+
+여기서 한 발 물러나 생각해보면, 이 조합 자체가 모순이다.
+
+> 낙관적 업데이트의 목적은 "응답을 기다리지 않는 즉각적인 피드백"인데,
+> `disabled={toggling}`은 "응답이 올 때까지" 컨트롤을 잠근다.
+
+둘 중 하나만 있어야 말이 된다.
+
+- 낙관적 업데이트가 **없다면**: 진행 중 상태를 보여주고 중복 입력을 막기 위해 disabled + 스피너가 필요하다.
+- 낙관적 업데이트가 **있다면**: 화면은 이미 결과를 보여주고 있고, 실패 시 롤백이 안전망이다. disabled는 낙관적 UI가 만든 즉각성을 도로 깎아 먹을 뿐이다.
+
+아마 처음에는 낙관적 업데이트 없이 disabled 가드부터 만들었고, 나중에 낙관적 업데이트를 추가하면서 가드를 걷어내지 않아 두 시대의 코드가 공존하게 됐을 것이다.
+
+해결은 한 줄 삭제다.
+
+```tsx
+<input
+  type="checkbox"
+  checked={task.is_completed}
+  onChange={(e) => onToggle(task.id, e.target.checked)}
+/>
+```
+
+"연타하면 어떡하지?"라는 걱정이 들 수 있는데, 각 클릭이 독립적인 mutation으로 낙관적 반영 + 실패 시 롤백 처리되므로 최종 상태는 마지막 클릭 기준으로 수렴한다. disabled 없이도 안전하다.
+
+## 파생 정리 1: 죽은 상태가 된 togglingId 제거
+
+`disabled`가 사라지자 `togglingId`를 쓰는 곳이 없어졌다. 그런데 지우려고 보니 이 state에는 원래부터 결함이 있었다.
+
+`togglingId`는 **단일 문자열**이라 동시에 하나의 토글만 추적할 수 있다. 사용자가 A를 클릭하고 응답이 오기 전에 B를 클릭하면:
+
+```txt
+A 클릭 → setTogglingId(A)
+B 클릭 → setTogglingId(B)      : A 추적 유실
+A 응답 → onSettled → setTogglingId(null) : 아직 진행 중인 B의 disabled까지 해제
+```
+
+mutation 자체는 각각 독립적으로 잘 처리되는데, 수동으로 추적하는 이 state만 경합에 취약했다. 낙관적 업데이트가 UX를 담당하게 되면 이런 수동 추적 자체가 필요 없어진다.
+
+```tsx
+// before
+const handleToggle = (id: string, done: boolean) => {
+  setTogglingId(id)
+  toggleTask.mutate(
+    { id, is_completed: done },
+    { onSettled: () => setTogglingId(null) }
+  )
+}
+
+// after
+const handleToggle = (id: string, done: boolean) => {
+  toggleTask.mutate({ id, is_completed: done })
+}
+```
+
+state 하나, prop 전달 체인 하나(페이지 → 리스트 → 카드)가 통째로 사라졌다.
+
+단, 같은 화면의 **삭제 버튼의 `deletingId`는 남겼다.** 삭제는 낙관적 업데이트가 없고(성공 후 invalidate), 확인 다이얼로그 후 실제 제거까지 시간이 걸리므로 스피너로 진행 중임을 보여주는 게 맞다. "낙관적 업데이트가 있는 액션에서는 로딩 가드를 빼고, 없는 액션에는 남긴다"가 기준이 됐다.
+
+## 파생 정리 2: 토글마다 리스트 전체 재조회하지 않기
+
+토글 mutation의 마무리 처리도 다시 보게 됐다.
+
+```tsx
+// before
+onSettled: () => {
+  queryClient.invalidateQueries({
+    queryKey: taskKeys.byScope(scope, targetDate),
+  })
+  queryClient.invalidateQueries({ queryKey: taskKeys.history() })
+},
+```
+
+`invalidateQueries`는 "확실하지만 무거운" 동기화다. 이 앱의 일간 태스크 조회는 단순 GET이 아니라, 요청 시 서버가 하루 시작 시각 게이트를 판정해서 **템플릿 시딩까지 시도하는** 엔드포인트다. 체크박스 하나 누를 때마다 그 로직이 통째로 다시 돌고 있었다.
+
+그런데 PATCH 응답에는 이미 **서버가 확정한 최신 task 한 건**이 들어 있다. 이걸 버리고 전체를 재조회할 이유가 없다.
+
+```tsx
+// after
+onSuccess: (updated) => {
+  queryClient.setQueryData<Task[]>(
+    taskKeys.byScope(scope, targetDate),
+    (old) =>
+      (old ?? []).map((task) => (task.id === updated.id ? updated : task))
+  )
+},
+onSettled: () => {
+  // 완료/취소는 완료 기록 목록에 영향을 주지만 그 데이터는 응답에 없으므로
+  // history 만 무효화한다.
+  queryClient.invalidateQueries({ queryKey: taskKeys.history() })
+},
+```
+
+이렇게 하면:
+
+1. 토글당 네트워크 왕복이 PATCH 한 번으로 끝난다. (추가 GET 없음)
+2. 낙관적 업데이트가 건드리지 못했던 `completed_at`(서버 시각)까지 서버 확정값으로 정확히 채워진다. `onMutate`에서는 `is_completed`만 뒤집었기 때문에, 재조회 전까지 캐시의 `completed_at`은 옛값이었다.
+3. 응답에 포함되지 않는 데이터(완료 기록 목록)만 invalidate로 동기화한다.
+
+"mutation 응답에 있는 데이터는 setQueryData로 반영하고, 응답에 없는 연관 데이터만 invalidate한다"는 구분이 생겼다.
+
+## 정리
+
+이번 건에서 얻은 것들을 정리하면 다음과 같다.
+
+```txt
+1. "낙관적 업데이트가 안 먹는다"고 느껴질 때, 정말 안 먹는 경우
+   (query key 불일치)와 데이터는 즉시 바뀌는데 다른 요인이 시각적
+   반영을 막는 경우를 구분해야 한다.
+
+2. 같은 데이터를 읽는 UI 조각들이 다르게 반응한다면, 데이터가 아니라
+   각 조각의 렌더링 경로(disabled, transition, 조건부 스타일)를 봐야
+   한다. 이번엔 disabled={toggling}이었다.
+
+3. 낙관적 업데이트와 "응답까지 컨트롤 잠금"은 목적이 충돌한다.
+   낙관적 업데이트가 있는 액션에서는 로딩 가드를 빼고,
+   없는 액션(삭제 등)에는 남긴다.
+
+4. 진행 중 상태를 단일 값(togglingId: string | null)으로 수동 추적하면
+   동시 액션에서 경합이 생긴다. 필요 없어졌다면 지우고, 필요하다면
+   mutation 자체의 상태를 쓰는 게 안전하다.
+
+5. mutation 응답에 최신 데이터가 있다면 invalidateQueries 대신
+   setQueryData로 해당 항목만 교체할 수 있다. 응답에 없는 연관
+   데이터만 invalidate한다. 조회 경로에 부수효과(템플릿 시딩)가
+   있다면 이 차이는 성능 이상의 의미가 있다.
+```
+
+수정 자체는 `disabled` 한 줄 삭제가 핵심이었지만, 그 한 줄이 왜 거기 있었고 왜 낙관적 업데이트와 공존할 수 없는지를 이해하고 나니 주변의 죽은 상태와 과한 재조회까지 함께 정리할 수 있었다. 버그의 크기와 배움의 크기는 비례하지 않는다.
