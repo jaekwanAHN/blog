@@ -1,0 +1,193 @@
+---
+title: "WSL에서 CLI로 commit · push · PR까지 (gh 인증 포함)"
+date: "2026-06-29"
+description: "WSL 터미널에서 git 설정부터 GitHub CLI(gh) 인증, 브랜치 푸시, PR 생성·머지까지 한 번에 정리한다."
+tags: ["WSL", "Git", "GitHub", "gh", "CLI"]
+---
+
+WSL에서 작업하다 보면 GitHub 웹을 오가지 않고 터미널 안에서 commit → push → PR까지 끝내고 싶어진다. 이 글은 그 흐름 전체를, 특히 **처음에 막히는 인증 부분**을 포함해 정리한다.
+
+## 큰 그림
+
+순서는 이렇다.
+
+1. git 기본 설정 (이름/이메일)
+2. GitHub CLI(`gh`) 설치
+3. `gh` 인증 + git 자격증명 연결
+4. 브랜치 → `commit` → `push`
+5. `gh pr create`로 PR 생성
+6. (선택) `gh pr merge`로 머지
+
+3번까지는 **최초 1회만** 하면 되고, 이후엔 4~6번만 반복한다.
+
+## 1. git 기본 설정
+
+커밋에 들어갈 작성자 정보를 먼저 맞춘다. 안 해두면 커밋이 거부되거나 엉뚱한 작성자로 기록된다.
+
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+GitHub의 이메일을 노출하기 싫다면 GitHub가 제공하는 `noreply` 이메일(`Settings → Emails`)을 쓰면 된다.
+
+```bash
+git config --global user.email "12345678+username@users.noreply.github.com"
+```
+
+## 2. GitHub CLI(gh) 설치
+
+WSL(Ubuntu 기준)에는 `gh`가 기본 탑재돼 있지 않다. `apt`로 깔되, 우분투 기본 저장소 버전은 오래됐으므로 **GitHub 공식 저장소**를 추가해서 최신 버전을 받는다.
+
+```bash
+sudo mkdir -p -m 755 /etc/apt/keyrings
+wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+
+sudo apt update
+sudo apt install gh
+```
+
+설치 확인.
+
+```bash
+gh --version
+```
+
+## 3. gh 인증 (여기가 핵심)
+
+`gh auth login`을 실행하면 대화형으로 몇 가지를 물어본다.
+
+```bash
+gh auth login
+```
+
+질문에 이렇게 답하면 된다.
+
+- **What account do you want to log into?** → `GitHub.com`
+- **What is your preferred protocol for Git operations?** → `HTTPS` (가장 간단)
+- **Authenticate Git with your GitHub credentials?** → `Yes`
+- **How would you like to authenticate?** → `Login with a web browser`
+
+마지막 단계에서 터미널에 **일회용 코드(one-time code)** 가 뜨고, 브라우저로 `https://github.com/login/device`를 열라고 안내한다.
+
+### WSL에서 브라우저가 안 열릴 때
+
+WSL은 GUI 브라우저가 없어서 `gh`가 브라우저를 자동으로 못 띄우는 경우가 많다. 그럴 땐 터미널에 나온 **URL과 코드를 직접 Windows 브라우저에 입력**하면 된다.
+
+- 터미널에 표시된 코드(예: `ABCD-1234`)를 복사
+- Windows 쪽 브라우저에서 `https://github.com/login/device` 접속 후 코드 붙여넣기
+- 권한 승인 → 터미널로 돌아오면 인증 완료
+
+매번 직접 여는 게 번거롭다면, WSL에서 Windows 기본 브라우저를 열어주는 도구를 깔아두면 `gh`가 알아서 띄워준다.
+
+```bash
+sudo apt install wslu   # wslview 명령 제공
+```
+
+`wslu`가 있으면 `gh`가 `wslview`를 통해 Windows 브라우저를 자동으로 연다.
+
+### 토큰(PAT) 방식 대안
+
+브라우저 흐름이 막히면 **Personal Access Token**으로도 인증할 수 있다. GitHub `Settings → Developer settings → Personal access tokens`에서 `repo` 등 권한을 준 토큰을 발급한 뒤:
+
+```bash
+gh auth login
+# How would you like to authenticate? → Paste an authentication token
+```
+
+여기에 토큰을 붙여넣으면 된다. CI나 헤드리스 환경에서는 환경변수로도 쓸 수 있다.
+
+```bash
+echo $GH_TOKEN | gh auth login --with-token
+```
+
+### git과 자격증명 연결
+
+`gh auth login` 중에 "Authenticate Git with your GitHub credentials? → Yes"를 골랐다면 이미 연결돼 있다. 따로 하고 싶거나 확인하려면:
+
+```bash
+gh auth setup-git   # gh를 git의 credential helper로 등록
+gh auth status      # 현재 로그인 상태 확인
+```
+
+이렇게 해두면 `git push`가 `gh`의 토큰을 자격증명으로 재사용하므로, **푸시할 때마다 아이디·비밀번호를 묻지 않는다.**
+
+## 4. 브랜치 → commit → push
+
+이제 일상 작업이다. 보통 `main`에 직접 올리지 않고 작업 브랜치를 판다.
+
+```bash
+git switch -c feat/my-feature   # 브랜치 생성 + 이동
+
+# ...코드 수정...
+
+git add .
+git commit -m "feat: 기능 추가"
+
+git push -u origin feat/my-feature   # 원격에 브랜치 첫 푸시(-u로 추적 설정)
+```
+
+`-u`(`--set-upstream`)는 처음 한 번만 붙이면 되고, 이후엔 `git push`만으로 같은 브랜치에 올라간다.
+
+## 5. PR 생성
+
+푸시한 브랜치를 그대로 PR로 만든다.
+
+```bash
+gh pr create --base main --head feat/my-feature \
+  --title "기능 추가" \
+  --body "변경 내용 설명"
+```
+
+옵션 없이 `gh pr create`만 치면 제목·본문을 대화형으로 입력받는다. 현재 브랜치 기준으로 자동 인식하므로 `--head`는 생략해도 된다.
+
+자주 쓰는 보조 명령.
+
+```bash
+gh pr view --web   # 방금 만든 PR을 브라우저로 열기
+gh pr status       # 내 PR들의 상태 한눈에 보기
+gh pr list         # 저장소 PR 목록
+```
+
+## 6. (선택) 머지
+
+리뷰가 끝났다면 터미널에서 바로 머지할 수도 있다.
+
+```bash
+gh pr merge --squash --delete-branch
+```
+
+- `--squash` — 커밋을 하나로 합쳐 머지 (`--merge`, `--rebase`도 가능)
+- `--delete-branch` — 머지 후 원격 브랜치 자동 삭제
+
+## 한 번에 보는 전체 흐름
+
+```bash
+# (최초 1회) 설정
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+gh auth login          # HTTPS + 브라우저(또는 토큰)
+gh auth setup-git
+
+# (반복) 작업 → PR
+git switch -c feat/x
+git add .
+git commit -m "feat: x"
+git push -u origin feat/x
+gh pr create --fill    # --fill: 커밋 메시지로 제목·본문 자동 채움
+gh pr merge --squash --delete-branch
+```
+
+## 자주 막히는 지점 정리
+
+- **`gh: command not found`** — 2번 설치 단계를 건너뛴 것. 공식 저장소 추가 후 `sudo apt install gh`.
+- **푸시할 때 인증 창이 계속 뜸** — `gh auth setup-git`을 안 한 경우. 실행하면 git이 gh 토큰을 재사용한다.
+- **브라우저가 안 열림** — WSL 특성. URL·코드를 직접 Windows 브라우저에 입력하거나 `wslu`(`wslview`)를 설치.
+- **PR이 엉뚱한 브랜치로 생성됨** — `--base`(머지 대상)와 `--head`(내 브랜치)를 명시하면 확실하다.
+
+WSL에서도 인증만 한 번 제대로 잡아두면, 그다음부터는 웹을 거치지 않고 `commit → push → pr create → merge`를 터미널 안에서 매끄럽게 끝낼 수 있다.
