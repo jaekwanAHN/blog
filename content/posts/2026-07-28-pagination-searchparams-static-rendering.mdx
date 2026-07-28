@@ -184,7 +184,40 @@ export function getAllPosts(): PostMeta[] {
 
 ## 확인
 
-로컬에서 라우트별로 확인했다.
+의도한 게 정말 일어났는지는 `next build`의 라우트 표에 나온다. 바꾸기 전, 쿼리 방식일 때는 이랬다.
+
+```
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ● /blog/[slug]
+├ ○ /tags
+└ ● /tags/[tag]
+
+○  (Static)   prerendered as static content
+●  (SSG)      prerendered as static HTML (uses generateStaticParams)
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+홈만 `ƒ`다. 이 블로그에서 유일하게 동적인 페이지가, 하필 가장 많이 열리는 페이지였다. 경로 기반으로 바꾼 뒤에는 이렇게 된다.
+
+```
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ● /blog/[slug]
+├ ● /page/[n]
+│ └ /page/2
+├ ○ /tags
+└ ● /tags/[tag]
+
+○  (Static)  prerendered as static content
+●  (SSG)     prerendered as static HTML (uses generateStaticParams)
+```
+
+`ƒ` 범례 자체가 사라졌다. 동적 렌더링되는 라우트가 하나도 없다는 뜻이다. 홈은 `○`로 돌아왔고, `/page/2`는 `generateStaticParams`가 만든 목록대로 미리 생성됐다.
+
+라우트별 응답도 확인했다.
 
 - `/` — 200, 포스트 10개, 현재 페이지 1
 - `/page/2` — 200, 포스트 6개, 현재 페이지 2
@@ -207,7 +240,7 @@ export function getAllPosts(): PostMeta[] {
 
 ## 배운 것
 
-- **"동작한다"와 "어떻게 렌더링되는가"는 다른 질문이다.** 페이지네이션은 처음부터 완벽히 동작했다. 바뀐 건 브라우저에서 보이지 않는 렌더링 전략이었고, 그래서 아무도 알려주지 않았다.
+- **"동작한다"와 "어떻게 렌더링되는가"는 다른 질문이다.** 페이지네이션은 처음부터 완벽히 동작했다. 바뀐 건 브라우저에서 보이지 않는 렌더링 전략이라 에러도 경고도 없었다. 그걸 알려주는 곳은 `next build`의 라우트 표 하나뿐이었고, 기능이 잘 되는 동안은 그 표를 볼 이유가 없다는 게 함정이다.
 - **App Router에서 렌더링 전략은 설정이 아니라 API 사용으로 결정된다.** `searchParams`, `cookies()`, `headers()`를 읽으면 그 순간 동적이 된다. 설정 파일을 뒤져도 안 나오고, 어느 API를 썼는지를 봐야 한다.
 - **측정이 "문제 없음"을 알려주는 것도 성과다.** 16개에서 3ms라는 숫자 덕분에 "느려서 고쳤다"가 아니라 "CDN 캐시를 되찾으려고 고쳤다"로 이유를 정확히 말할 수 있게 됐다. 이유가 정확해야 어디까지 고칠지도 정해진다.
 - **캐시의 유효 범위는 데이터의 출처를 따라간다.** mdx 파일은 모듈 그래프 밖에 있어서 HMR이 모른다. 무엇이 무효화를 일으키는지 모르는 채로 캐시를 붙이면, 성능이 아니라 개발 흐름이 먼저 깨진다.
