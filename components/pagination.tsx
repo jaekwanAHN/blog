@@ -4,15 +4,19 @@ import Link from "next/link";
 interface PaginationProps {
   currentPage: number;
   totalPages: number;
-  /** 페이지 링크의 기준 경로. 예: "/" */
+  /** 목록의 기준 경로. 예: "/" → "/page/2", "/tags/react" → "/tags/react/page/2" */
   basePath?: string;
 }
 
-/** page 번호를 기준 경로 + 쿼리스트링으로 변환한다. 1페이지는 쿼리 없이 기본 경로로 둔다. */
+/**
+ * page 번호를 경로로 변환한다. 쿼리스트링(`?page=2`) 대신 경로를 쓰는 이유는
+ * 쿼리를 읽는 순간 페이지가 동적 렌더링으로 바뀌어 정적 생성에서 빠지기 때문이다.
+ * 1페이지는 기준 경로 자체이므로 별도 URL을 만들지 않는다.
+ */
 function pageHref(basePath: string, page: number): string {
   if (page <= 1) return basePath;
-  const sep = basePath.includes("?") ? "&" : "?";
-  return `${basePath}${sep}page=${page}`;
+  const base = basePath === "/" ? "" : basePath.replace(/\/$/, "");
+  return `${base}/page/${page}`;
 }
 
 export function Pagination({
