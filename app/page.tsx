@@ -1,12 +1,26 @@
 // app/page.tsx
 import Link from "next/link";
-import { getAllPosts, getAllTags } from "@/lib/mdx";
+import { getAllPosts, getAllTags, POSTS_PER_PAGE } from "@/lib/mdx";
 import { PostList } from "@/components/post-list";
+import { Pagination } from "@/components/pagination";
 import { TagLink } from "@/components/tag-link";
 
-export default function Home() {
+interface HomeProps {
+  searchParams: Promise<{ page?: string }>;
+}
+
+export default async function Home({ searchParams }: HomeProps) {
+  const { page } = await searchParams;
   const posts = getAllPosts();
   const tags = getAllTags();
+
+  const totalPages = Math.max(1, Math.ceil(posts.length / POSTS_PER_PAGE));
+  const parsed = Number.parseInt(page ?? "1", 10);
+  const currentPage = Number.isNaN(parsed)
+    ? 1
+    : Math.min(Math.max(parsed, 1), totalPages);
+  const start = (currentPage - 1) * POSTS_PER_PAGE;
+  const pagedPosts = posts.slice(start, start + POSTS_PER_PAGE);
 
   return (
     <div className="flex-1 bg-zinc-50 font-sans dark:bg-zinc-950">
@@ -37,7 +51,10 @@ export default function Home() {
           </section>
         )}
         {posts.length > 0 ? (
-          <PostList posts={posts} />
+          <>
+            <PostList posts={pagedPosts} />
+            <Pagination currentPage={currentPage} totalPages={totalPages} />
+          </>
         ) : (
           <p className="text-zinc-500 dark:text-zinc-400">
             아직 작성된 포스트가 없습니다.

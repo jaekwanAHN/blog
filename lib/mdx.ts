@@ -6,6 +6,8 @@ import rehypePrettyCode from "rehype-pretty-code";
 
 const POSTS_DIR = path.join(process.cwd(), "content", "posts");
 
+export const POSTS_PER_PAGE = 10;
+
 export interface PostFrontmatter {
   title: string;
   date: string;
