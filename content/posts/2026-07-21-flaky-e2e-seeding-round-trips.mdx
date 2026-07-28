@@ -1,0 +1,112 @@
+---
+title: "가끔 깨지는 CI 테스트를 타임아웃으로 덮다가 만난 진짜 원인"
+date: "2026-07-21"
+description: "CI에서만 간헐적으로 실패하던 e2e 테스트 — 타임아웃을 늘려 덮는 대신, 읽기 요청에 숨어 있던 직렬 다중 왕복을 단일 RPC로 줄이고 통계로 검증한 기록"
+tags: ["e2e", "playwright", "supabase", "postgres", "ci"]
+---
+
+경험을 토대로 AI를 활용하여 작성한 글 입니다.
+
+취업 준비 플래너 앱에 main 병합 전 e2e 게이트를 걸어두고 나서, 한동안 잘 돌던 CI가 가끔 빨간불이 됐다. 매번 같은 테스트였다.
+
+```
+✘ template.spec.ts:21 › 템플릿을 추가하면 오늘 일간 목록에 시딩되고…
+  Error: expect(locator).toBeVisible() failed
+  Timeout: 20000ms — element(s) not found
+```
+
+로컬에서는 100% 통과하는데 CI에서만, 그것도 대부분은 통과하고 가끔 실패한다. 전형적인 flaky 테스트다. 처음엔 별생각 없이 대기 시간을 늘렸다. 기본 5초로는 부족한가 보다 하고 20초로. 그런데 **20초로 늘린 뒤에도 또 실패**했다. 재시도 2번까지 다 소진하고도. 이쯤 되니 "네트워크가 느려서"로 넘길 수 없었다. 20초를 못 맞춘다는 건 지연이 우연이 아니라 구조적이라는 뜻이었다.
+
+## 시딩이 뭐길래 20초가 걸리나
+
+이 앱에는 "템플릿"이라는 게 있다. 매일 반복할 할 일의 틀(예: "오늘의 알고리즘 1문제")을 만들어두면, 하루 시작 시각이 지날 때 그날의 일간 태스크로 자동 복제된다. 이 자동 복제를 시딩(seeding)이라고 불렀다. 크론이나 백그라운드 잡이 없어서, **그날 처음 일간 목록을 열 때** 서버가 lazy하게 시딩한다.
+
+문제는 이 시딩이 얹혀 있는 위치였다. `GET /api/tasks?scope=daily`는 이름만 보면 조회인데, 응답을 만들기 전에 시딩(쓰기)을 먼저 한다. 그리고 그 시딩이 원격 Supabase로 이렇게 한 단계씩 왕복하고 있었다.
+
+```ts
+// applyDailyTemplates (구버전) — 앱이 한 단계씩 원격 왕복
+const templates   = await supabase.from('task_templates').select(...)      // 왕복
+const applied     = await supabase.from('task_template_applications')...    // 왕복
+const claimed     = await supabase.from('task_template_applications')
+                            .upsert(candidates, { ignoreDuplicates: true }) // 왕복
+await supabase.from('tasks').insert(toSeed)                                 // 왕복
+```
+
+여기에 시간 게이트 판정용 `profiles` 조회와 마지막 목록 `select`까지 합치면, **한 번의 GET 안에서 원격 DB로 5~6번 순차 왕복**이 일어난다. 병렬이 아니라 앞 결과가 있어야 다음을 하는 직렬이라, 총 지연은 (왕복 수) × (홉당 RTT)로 그대로 누적된다.
+
+로컬에서는 DB가 가까워 홉당 몇 ms니까 다 합쳐도 ~2.7초. 그런데 GitHub Actions 러너에서 원격 Supabase까지는 크로스리전이라 홉당 RTT가 크고, 여기에 러너 부하까지 겹치는 순간 6홉의 합이 20초를 넘겨버린다. flaky의 정체는 이 tail이었다.
+
+## 이 다단계는 낭비가 아니었다
+
+없앨 수 있나 코드를 들여다봤는데, 이 다단계는 이유가 있었다. `(템플릿, 날짜)`당 정확히 한 번만 시딩돼야 한다 — 여러 탭이 동시에 열려도 태스크가 중복 생성되면 안 된다. 그래서 `task_template_applications` 테이블에 `UNIQUE(template_id, applied_date)` 제약을 두고, upsert로 "적용 기록을 먼저 선점"한 뒤 **실제로 새로 선점된 것만** 태스크로 만든다. 동시 요청 중 하나만 선점에 성공하니 중복이 원자적으로 막힌다.
+
+즉 왕복이 많은 건 정확성을 위한 것이지 게으름이 아니었다. 문제는 그 정확성 로직을 **앱이 네트워크 너머로 한 조각씩 왕복하며** 수행한다는 데 있었다.
+
+## 조각을 DB 안으로 밀어넣기
+
+해결은 방향이 분명했다. 조회·선점·삽입을 앱에서 여러 번 왕복하는 대신, Postgres 함수 하나로 묶어 **DB 엔진 안에서** 처리하면 된다. 테이블 조인과 충돌 처리는 원래 DB가 제일 잘하는 일이다.
+
+```sql
+create or replace function public.seed_daily_templates(p_target_date date)
+returns void
+language sql
+security invoker            -- 호출자 권한 → 기존 RLS 그대로 적용
+as $$
+  with claimed as (
+    insert into public.task_template_applications (user_id, template_id, applied_date)
+    select t.user_id, t.id, p_target_date
+    from public.task_templates t
+    where t.user_id = auth.uid() and t.is_active
+    on conflict (template_id, applied_date) do nothing   -- 동시성·멱등 그대로
+    returning template_id
+  )
+  insert into public.tasks (user_id, title, description, scope, target_date,
+                            is_completed, category, priority)
+  select t.user_id, t.title, t.description, 'daily', p_target_date, false,
+         t.category, t.priority
+  from public.task_templates t
+  join claimed c on c.template_id = t.id;   -- '새로 선점된 것'만 시딩
+$$;
+```
+
+핵심은 `on conflict do nothing returning`으로 나온 "새로 선점된 행"을 같은 CTE 문 안에서 바로 태스크로 넣는 것이다. 선점과 삽입을 한 문에 묶어야 동시성 안전이 유지된다(분리하면 레이스가 돌아온다). 그러면 앱 코드는 이렇게 줄어든다.
+
+```ts
+// 4쿼리 → 1 왕복
+await supabase.rpc('seed_daily_templates', { p_target_date: targetDate })
+```
+
+시딩 관련 원격 왕복이 **4번에서 1번으로** 줄었다. 덤으로 얻은 것도 있었다. 예전 JS 다단계는 "선점(upsert)은 성공했는데 tasks insert 직전에 프로세스가 죽으면" 적용 기록만 남고 태스크는 없는 상태가 될 수 있었다 — 그 템플릿은 그날 영영 시딩 안 되는 조용한 버그다. CTE 단일 문은 한 트랜잭션이라 그 창까지 사라졌다.
+
+`security invoker`(기본값)를 유지한 게 중요했다. 이러면 함수가 호출자 권한으로 실행돼 기존 RLS 정책이 그대로 적용된다. 성능 욕심에 `security definer`로 바꾸면 RLS를 우회하니, 명시적 `user_id = auth.uid()` 필터 없이는 남의 데이터가 새는 문이 된다.
+
+## "몇 번 통과하면 고쳤다고 할 수 있나"
+
+migration을 원격에 적용하고 CI를 돌렸다. 통과. 한 번 더. 통과. 이걸 반복해서 16번을 돌렸는데 전부 통과했다(209~281초). 여기서 잠깐 멈칫했다. **16번 통과하면 "flaky 고쳤다"고 단언해도 되나?**
+
+통계적으로는 아니다. 실패 0회의 신뢰구간은 rule of three로 근사되는데, n번 중 0 실패면 실제 실패율의 95% 상한이 대략 `3/n`이다. 16번이면 상한이 ~19%. 즉 16번 다 통과해도 "실은 실패율이 15%쯤 남아 있는 상태"와 통계적으로 모순되지 않는다. 실패율 `5%` 이하를 주장하려면 60번, `1%` 이하면 300번을 돌려야 하고, 그래도 **부재를 증명하는 건 불가능하다**. 드문 tail은 유한 반복으로 잡히지 않는다.
+
+그래서 확신의 진짜 근거는 반복 횟수가 아니라 **원인을 제거했다는 사실**이어야 했다. flaky의 원인은 6홉 왕복의 지연 누적이었고, 그걸 1홉으로 줄였으니 tail 지연의 기여가 구조적으로 사라진 것이다. 16번 통과는 그걸 뒷받침하는 보강 증거일 뿐이다.
+
+그리고 pass/fail 카운트보다 강한 증거가 하나 더 있었다. 애초에 5초를 20초로 늘렸던 그 타임아웃이다. 원인이 사라졌으면 이 밴드는 이제 필요 없다. 그래서 **20초를 10초로 되돌렸다**. 20초에서 100번 통과하는 것보다, 10초라는 빡빡한 예산에서 통과하는 게 "여유가 크다"는 걸 훨씬 강하게 말해준다. CI는 10초에서도 문제없이 통과했다(로컬 시딩이 ~2.7초니 당연했다).
+
+## 곁가지: CI가 로컬보다 느린 게 네트워크 때문만은 아니었다
+
+측정하다 하나 알게 됐다. 로컬 e2e 전체가 ~84초인데 CI e2e 잡은 ~250초다. "네트워크가 느려서겠지" 했는데, 스텝별로 뜯어보니 그렇게 단순하지 않았다.
+
+```
+Install Playwright browsers   22s   ← 크로미움 다운로드 (로컬은 0)
+Run E2E tests                177s   ← 실제 테스트
+그 외 setup/install           ~37s
+```
+
+셋업이 ~37초, 테스트 실행 자체가 177초. 로컬 테스트 실행 84초와 비교하면 **테스트 실행만 2배** 차이가 난다. 이건 러너 CPU(2 vCPU)에서 `next dev`가 라우트마다 콜드 컴파일하는 비용 + 매 테스트의 원격 Supabase RTT 누적 + CI 한정 `retries: 2`가 겹친 결과다. 네트워크는 그중 한 축이고, 시딩 flaky의 직접 원인이긴 했지만, 전체 격차의 단독 범인은 아니었다.
+
+## 남은 이야기
+
+돌아보면 이 문제의 시작은 "타임아웃을 5초에서 20초로 늘린 것"이었다. 그건 증상을 덮는 반창고였고, 반창고 밑에는 "읽기 요청에 정확성 로직을 네트워크 너머로 한 조각씩 왕복시키는" 구조가 있었다. flaky 테스트를 만나면 대기 시간부터 늘리고 싶어지는데, 그 테스트가 사실은 **성능/구조 문제를 대신 알려주는 신호**일 때가 많다는 걸 다시 배웠다.
+
+교훈을 두 줄로 남긴다.
+
+- 왕복 수는 지연의 단위다. 특히 원격 DB에서는 "쿼리 몇 개"가 아니라 "왕복 몇 번"으로 세야 한다. 여러 조각을 한 SQL(CTE/함수)로 묶을 수 있으면 그게 곧 지연 최적화다.
+- 반복 실행으로는 flaky의 "없음"을 증명할 수 없다. 통과 횟수를 쌓는 대신 원인을 제거하고, 예산(타임아웃)을 조여서 여유를 증명하는 편이 낫다.
