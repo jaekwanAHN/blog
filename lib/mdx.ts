@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import matter from "gray-matter";
 import rehypePrettyCode from "rehype-pretty-code";
+import remarkGfm from "remark-gfm";
 
 const POSTS_DIR = path.join(process.cwd(), "content", "posts");
 
@@ -110,6 +111,12 @@ export function getAllSlugs(): string[] {
     .filter((f) => /\.mdx?$/.test(f))
     .map((f) => getSlugFromFilename(f));
 }
+
+/**
+ * MDX는 CommonMark + JSX라서 표·취소선·체크박스·각주 같은 GFM 확장 문법을
+ * 기본으로 이해하지 못한다. remark-gfm이 없으면 표가 문단 텍스트로 렌더링된다.
+ */
+export const mdxRemarkPlugins = [remarkGfm];
 
 export const mdxRehypePlugins = [
   [
