@@ -85,5 +85,12 @@ export const mdxComponents: MDXComponents = {
       {children}
     </blockquote>
   ),
+  // 열이 많은 표는 좁은 화면에서 본문 폭을 넘긴다. typography 플러그인은 표에
+  // overflow를 주지 않으므로, 페이지 전체가 가로 스크롤되지 않도록 표만 스크롤시킨다.
+  table: ({ children, ...props }) => (
+    <div className="overflow-x-auto">
+      <table {...props}>{children}</table>
+    </div>
+  ),
   img: (props) => <MdxImage {...props} />,
 };

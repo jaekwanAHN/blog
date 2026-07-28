@@ -3,7 +3,12 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { Pluggable } from "unified";
 import { MDXRemote } from "next-mdx-remote/rsc";
-import { getPostBySlug, getAllSlugs, mdxRehypePlugins } from "@/lib/mdx";
+import {
+  getPostBySlug,
+  getAllSlugs,
+  mdxRemarkPlugins,
+  mdxRehypePlugins,
+} from "@/lib/mdx";
 import { mdxComponents } from "@/components/mdx-components";
 import { TagLink } from "@/components/tag-link";
 
@@ -42,6 +47,7 @@ export default async function BlogPostPage({ params }: PageProps) {
     source: content,
     options: {
       mdxOptions: {
+        remarkPlugins: mdxRemarkPlugins as Pluggable[],
         rehypePlugins: mdxRehypePlugins as Pluggable[],
       },
     },
