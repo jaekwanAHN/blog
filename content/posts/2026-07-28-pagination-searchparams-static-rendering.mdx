@@ -1,0 +1,246 @@
+---
+title: "페이지네이션을 붙였더니 홈이 조용히 정적 생성에서 빠졌다"
+date: "2026-07-28"
+description: "searchParams를 읽는 순간 페이지가 동적 렌더링으로 바뀐다 — 잘 동작하는 기능 뒤에서 렌더링 전략이 바뀐 것을 발견하고, 경로 기반 페이지네이션과 목록 캐싱으로 되돌린 기록"
+tags: ["nextjs", "app-router", "ssg", "pagination", "performance"]
+---
+
+경험을 토대로 AI를 활용하여 작성한 글 입니다.
+
+블로그 포스트가 16개가 되면서 홈이 길어졌다. 페이지당 10개로 끊는 페이지네이션을 붙였고, 잘 동작했다. 1페이지에 10개, 2페이지에 6개, 범위를 벗어난 `?page=3`은 마지막 페이지로 보정되고, `?page=abc` 같은 값도 1페이지로 떨어졌다.
+
+기능만 보면 끝난 작업이었다. 그런데 이 구현에는 코드 어디에도 적혀 있지 않은 부작용이 하나 있었다.
+
+## 잘 동작하는데 뭔가 바뀌었다
+
+처음 구현은 쿼리스트링 방식이었다.
+
+```tsx
+interface HomeProps {
+  searchParams: Promise<{ page?: string }>;
+}
+
+export default async function Home({ searchParams }: HomeProps) {
+  const { page } = await searchParams;
+  const posts = getAllPosts();
+  const tags = getAllTags();
+
+  const totalPages = Math.max(1, Math.ceil(posts.length / POSTS_PER_PAGE));
+  const parsed = Number.parseInt(page ?? "1", 10);
+  const currentPage = Number.isNaN(parsed)
+    ? 1
+    : Math.min(Math.max(parsed, 1), totalPages);
+  // ...
+}
+```
+
+`await searchParams` — 이 한 줄이 홈의 렌더링 전략을 바꿨다.
+
+App Router는 페이지가 **요청마다 달라지는 입력**을 읽는지로 정적/동적을 가른다. `searchParams`, `cookies()`, `headers()`가 그 입력이다. `?page=2`의 결과는 빌드할 때 알 수 없으므로, 이걸 읽는 페이지는 빌드 시점에 결과를 확정할 수 없는 페이지가 된다.
+
+- **이전**: 빌드 때 HTML 하나 생성 → CDN에서 그대로 서빙. 요청당 서버 실행 없음.
+- **이후**: 요청마다 서버에서 렌더링. 정적 파일이 아니라 함수 호출.
+
+`export const dynamic`을 쓴 적도 없고 `next.config.ts`를 건드린 적도 없다. API를 하나 쓴 것만으로 자동으로 넘어간다. 그래서 **에러도 경고도 없고, 브라우저에서 보면 멀쩡히 잘 동작한다.**
+
+그리고 이건 `revalidate`로 되돌릴 수 없다. 쿼리스트링은 라우트 캐시의 키가 아니라서, ISR로 덮을 수 있는 종류의 동적성이 아니다.
+
+## 겹쳐 있던 두 번째 문제
+
+동적 렌더링 자체보다, 그 아래에 뭐가 깔려 있는지가 더 문제였다. 콘텐츠를 읽는 코드에 캐싱이 없었다.
+
+```ts
+export function getAllPosts(): PostMeta[] {
+  const filenames = fs.readdirSync(POSTS_DIR).filter((f) => /\.mdx?$/.test(f));
+  const posts = filenames.map((filename) => {
+    const raw = fs.readFileSync(path.join(POSTS_DIR, filename), "utf-8");
+    const { data } = matter(raw);
+    // ...
+  });
+  posts.sort(/* 날짜 역순 */);
+  return posts;
+}
+
+export function getAllTags(): TagCount[] {
+  const counts = new Map<string, number>();
+  for (const post of getAllPosts()) {  // ← 여기서 또 전수 스캔
+    // ...
+  }
+}
+```
+
+호출될 때마다 디렉터리를 읽고, 모든 파일을 열고, frontmatter를 파싱한다. 그리고 홈은 이렇게 시작한다.
+
+```tsx
+const posts = getAllPosts();
+const tags = getAllTags();  // 내부에서 getAllPosts()를 다시 호출
+```
+
+두 줄이 **전체 포스트를 2번 스캔**한다. 정적 생성일 때는 빌드 때 한 번이라 아무래도 좋았다. 동적으로 바뀌면 이게 매 요청 비용이 된다.
+
+얼마나 되는 비용인지 감으로 말하지 않으려고, 실제 포스트 하나를 템플릿으로 복제해서 개수만 늘려가며 재봤다.
+
+`getAllPosts()` 1회 스캔 시간과, 그게 2번 일어나는 홈 1회 렌더 시간이다.
+
+- **16개 (현재)** — 1.5ms / 3.0ms
+- **100개** — 8.4ms / 16.8ms
+- **1,000개** — 71.5ms / 143ms
+- **10,000개** — 610ms / 1,221ms
+
+결론은 솔직히 **"지금은 문제가 아니다"** 였다. 16개면 3ms고, 이걸 성능 이슈라고 부르면 과장이다. 측정의 값어치는 다른 데 있었다. 실제로 잃은 건 밀리초가 아니라 이것들이다.
+
+- CDN 엣지 캐시에서 빠짐 → TTFB가 오리진까지의 왕복에 묶인다
+- 서버리스 콜드 스타트가 홈 첫 방문에 노출된다
+- 지금은 3ms지만 증가가 선형이고, 그 선을 따라가면 언젠가 진짜 비용이 된다
+
+## 경로 기반으로 바꾸기
+
+되돌리는 방법은 간단하다. 요청마다 달라지는 입력을 읽지 않으면 된다. 페이지 번호를 쿼리가 아니라 **경로**로 받으면, 가능한 값이 빌드 시점에 전부 정해진다.
+
+홈(`/`)은 1페이지를 그대로 맡고, 2페이지부터는 새 라우트가 담당한다.
+
+```tsx
+// app/page/[n]/page.tsx
+export function generateStaticParams() {
+  const totalPages = getTotalPages();
+  return Array.from({ length: Math.max(0, totalPages - 1) }, (_, i) => ({
+    n: String(i + 2),
+  }));
+}
+
+export default async function PaginatedPostsPage({ params }: PageProps) {
+  const { n } = await params;
+
+  // "/page/1"은 홈과 내용이 같으므로 중복 URL을 만들지 않고 홈으로 보낸다
+  if (n === "1") {
+    redirect("/");
+  }
+
+  // "02", "2abc" 같은 값이 2페이지로 통하면 같은 내용의 URL이 여러 개 생긴다
+  if (!/^[1-9][0-9]*$/.test(n)) {
+    notFound();
+  }
+
+  const currentPage = Number.parseInt(n, 10);
+  if (currentPage > getTotalPages()) {
+    notFound();
+  }
+
+  return <PostsPage currentPage={currentPage} />;
+}
+```
+
+`params`는 `searchParams`와 달리 동적 렌더링을 유발하지 않는다. `generateStaticParams`가 값의 목록을 미리 알려주기 때문이다.
+
+여기서 쿼리 방식과 갈리는 지점이 하나 있다. 쿼리 방식에서는 `?page=999`를 **보정**해서 마지막 페이지를 보여줬다. 경로 방식에서는 `/page/999`를 **404**로 처리한다. 보정하면 존재하지 않는 URL이 200을 반환하게 되고, 같은 내용이 무한히 많은 주소를 갖게 된다. `02`나 `2abc`를 막는 것도 같은 이유다.
+
+그리고 홈은 이렇게 줄었다.
+
+```tsx
+// app/page.tsx
+// searchParams를 읽지 않으므로 이 페이지는 빌드 시점에 정적으로 생성된다.
+export default function Home() {
+  return <PostsPage currentPage={1} />;
+}
+```
+
+두 라우트가 같은 화면을 그리므로 목록 UI는 `components/posts-page.tsx`로 분리했다.
+
+링크 생성도 경로 방식으로 바꿨다. 기준 경로를 파라미터로 남겨둬서, 나중에 태그별 목록에도 그대로 쓸 수 있게 했다.
+
+```tsx
+/**
+ * 쿼리스트링(`?page=2`) 대신 경로를 쓰는 이유는 쿼리를 읽는 순간
+ * 페이지가 동적 렌더링으로 바뀌어 정적 생성에서 빠지기 때문이다.
+ */
+function pageHref(basePath: string, page: number): string {
+  if (page <= 1) return basePath;
+  const base = basePath === "/" ? "" : basePath.replace(/\/$/, "");
+  return `${base}/page/${page}`;
+}
+```
+
+## 캐싱은 dev에서 꺼야 했다
+
+`getAllPosts()`에는 모듈 스코프 캐시를 붙였다. 빌드 전체에서 전수 스캔이 한 번이면 충분하다.
+
+```ts
+let postsCache: PostMeta[] | null = null;
+const useCache = process.env.NODE_ENV !== "development";
+
+export function getAllPosts(): PostMeta[] {
+  if (useCache && postsCache) {
+    return postsCache;
+  }
+  // ... 읽고 파싱하고 정렬
+  if (useCache) {
+    postsCache = posts;
+  }
+  return posts;
+}
+```
+
+`NODE_ENV` 분기가 핵심이다. 포스트는 `content/posts`에 있는 mdx 파일이라 **모듈 그래프 밖**에 있다. 코드를 고치면 HMR이 모듈을 다시 불러오지만, mdx 파일을 추가하는 건 어떤 모듈도 무효화하지 않는다. dev에서 캐시를 켜두면 새 글을 써도 서버를 재시작하기 전까지 목록에 나타나지 않는다. 캐시가 **글 쓰는 흐름 자체를 망가뜨리는** 종류의 버그다.
+
+## 확인
+
+의도한 게 정말 일어났는지는 `next build`의 라우트 표에 나온다. 바꾸기 전, 쿼리 방식일 때는 이랬다.
+
+```
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ● /blog/[slug]
+├ ○ /tags
+└ ● /tags/[tag]
+
+○  (Static)   prerendered as static content
+●  (SSG)      prerendered as static HTML (uses generateStaticParams)
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+홈만 `ƒ`다. 이 블로그에서 유일하게 동적인 페이지가, 하필 가장 많이 열리는 페이지였다. 경로 기반으로 바꾼 뒤에는 이렇게 된다.
+
+```
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ● /blog/[slug]
+├ ● /page/[n]
+│ └ /page/2
+├ ○ /tags
+└ ● /tags/[tag]
+
+○  (Static)  prerendered as static content
+●  (SSG)     prerendered as static HTML (uses generateStaticParams)
+```
+
+`ƒ` 범례 자체가 사라졌다. 동적 렌더링되는 라우트가 하나도 없다는 뜻이다. 홈은 `○`로 돌아왔고, `/page/2`는 `generateStaticParams`가 만든 목록대로 미리 생성됐다.
+
+라우트별 응답도 확인했다.
+
+- `/` — 200, 포스트 10개, 현재 페이지 1
+- `/page/2` — 200, 포스트 6개, 현재 페이지 2
+- `/page/1` — 307로 `/`에 리다이렉트
+- `/page/3` — 404 (범위 밖)
+- `/page/02` — 404 (비정규 형식)
+- `/page/abc` — 404
+
+홈의 페이지네이션 링크도 `?page=2`가 아니라 `/page/2`로 나간다.
+
+## 이 구조가 어디까지 버티나
+
+경로 기반은 요청 시점 비용이 포스트 개수와 무관하게 0이다. CDN에 있는 HTML 하나를 내려줄 뿐이라 10,000개여도 TTFB가 같다. 다만 그 대가로 "미리 다 만들어두기"를 하므로, 규모가 커지면 비용이 빌드로 옮겨간다.
+
+포스트가 10,000개라면 페이지네이션 페이지 1,000개 + 상세 페이지 10,000개를 배포마다 만들어야 한다. 게다가 목록이 날짜 역순이라 **글 하나만 추가해도 모든 페이지의 내용이 한 칸씩 밀린다.** 1,000개 페이지가 전부 무효화된다. 그리고 그중 실제로 방문되는 건 앞의 두세 개다.
+
+그 지점에서의 답은 경로냐 쿼리냐가 아니라 다른 데 있다. 빌드 때 인덱스를 한 번 만들어 목록은 그것만 읽게 하거나, `dynamicParams`로 요청된 페이지만 만들어 캐시하는 ISR로 가거나, 페이지 번호 대신 커서 기반으로 바꾸는 쪽이다.
+
+다만 그건 수천 개부터의 이야기고, 개인 블로그가 도달할 현실적인 규모인 **수백 개까지는 경로 기반 정적 생성이 그대로 정답**이다. 지금 인덱스나 ISR을 미리 넣는 건 있지도 않을 문제에 대한 과설계고, 라우트가 `/page/[n]`으로 잡혀 있으면 나중에 ISR로 옮기는 건 `dynamicParams`를 켜는 수준의 변경이다.
+
+## 배운 것
+
+- **"동작한다"와 "어떻게 렌더링되는가"는 다른 질문이다.** 페이지네이션은 처음부터 완벽히 동작했다. 바뀐 건 브라우저에서 보이지 않는 렌더링 전략이라 에러도 경고도 없었다. 그걸 알려주는 곳은 `next build`의 라우트 표 하나뿐이었고, 기능이 잘 되는 동안은 그 표를 볼 이유가 없다는 게 함정이다.
+- **App Router에서 렌더링 전략은 설정이 아니라 API 사용으로 결정된다.** `searchParams`, `cookies()`, `headers()`를 읽으면 그 순간 동적이 된다. 설정 파일을 뒤져도 안 나오고, 어느 API를 썼는지를 봐야 한다.
+- **측정이 "문제 없음"을 알려주는 것도 성과다.** 16개에서 3ms라는 숫자 덕분에 "느려서 고쳤다"가 아니라 "CDN 캐시를 되찾으려고 고쳤다"로 이유를 정확히 말할 수 있게 됐다. 이유가 정확해야 어디까지 고칠지도 정해진다.
+- **캐시의 유효 범위는 데이터의 출처를 따라간다.** mdx 파일은 모듈 그래프 밖에 있어서 HMR이 모른다. 무엇이 무효화를 일으키는지 모르는 채로 캐시를 붙이면, 성능이 아니라 개발 흐름이 먼저 깨진다.

@@ -7,6 +7,8 @@ import remarkGfm from "remark-gfm";
 
 const POSTS_DIR = path.join(process.cwd(), "content", "posts");
 
+export const POSTS_PER_PAGE = 10;
+
 export interface PostFrontmatter {
   title: string;
   date: string;
@@ -31,7 +33,19 @@ function getSlugFromFilename(filename: string): string {
   return filename.replace(/\.mdx?$/, "");
 }
 
+/**
+ * 목록을 그릴 때마다 전체 포스트를 다시 읽지 않도록 모듈 스코프에 캐싱한다.
+ * 빌드·프로덕션에서는 콘텐츠가 바뀌지 않으므로 프로세스 생존 동안 유효하다.
+ * dev에서는 mdx를 추가·수정해도 즉시 반영돼야 하므로 캐시를 쓰지 않는다.
+ */
+let postsCache: PostMeta[] | null = null;
+const useCache = process.env.NODE_ENV !== "development";
+
+/** 캐시된 배열을 그대로 돌려주므로 호출부에서 변형하지 말 것 (slice/filter로 새 배열을 만들 것). */
 export function getAllPosts(): PostMeta[] {
+  if (useCache && postsCache) {
+    return postsCache;
+  }
   if (!fs.existsSync(POSTS_DIR)) {
     return [];
   }
@@ -54,7 +68,15 @@ export function getAllPosts(): PostMeta[] {
     const bTime = new Date(b.date).getTime();
     return bTime - aTime;
   });
+  if (useCache) {
+    postsCache = posts;
+  }
   return posts;
+}
+
+/** 전체 포스트를 POSTS_PER_PAGE로 나눈 페이지 수. 포스트가 없어도 최소 1이다. */
+export function getTotalPages(): number {
+  return Math.max(1, Math.ceil(getAllPosts().length / POSTS_PER_PAGE));
 }
 
 export interface TagCount {
