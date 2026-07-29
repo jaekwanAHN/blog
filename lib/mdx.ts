@@ -144,7 +144,10 @@ export const mdxRehypePlugins = [
   [
     rehypePrettyCode,
     {
-      theme: "github-dark",
+      // 테마를 하나만 쓰면 그 테마의 토큰 색이 그대로 박혀, 반대 밝기의 배경에서는
+      // 코드가 배경에 묻힌다. 두 테마를 함께 생성해 --shiki-light/--shiki-dark
+      // CSS 변수로 내보내고, 실제 선택은 app/globals.css가 .dark 클래스로 한다.
+      theme: { light: "github-light", dark: "github-dark" },
       keepBackground: false,
     },
   ],
