@@ -1,0 +1,183 @@
+---
+title: "유튜브 댓글창이 떨린 이유는 확장 프로그램이 뿌린 CSS 6줄이었다"
+date: "2026-08-05"
+description: "크롬에서 유튜브 댓글창이 위아래로 진동하던 현상을 시크릿 모드 비교 → 확장 매니페스트 분석 → 주입된 CSS 추적으로 좁혀 간 기록과, 전역 주입 CSS가 남의 사이트를 부수는 패턴 정리"
+tags: ["css", "chrome-extension", "debugging", "layout", "youtube"]
+---
+
+경험을 토대로 AI를 활용하여 작성한 글 입니다.
+
+## 증상
+
+며칠 전부터 크롬으로 유튜브를 볼 때마다 댓글창이 위아래로 잘게 떨렸다. 스크롤을 멈춰도 진동이 이어지고, 아래로 더 내려가면 추천 영상 영역까지 같이 흔들렸다. 영상 재생에는 문제가 없고 오직 레이아웃만 떨렸다.
+
+처음엔 당연히 유튜브 쪽 버그라고 생각했다. 실제로 크롬 커뮤니티에 [댓글창이 지진처럼 흔들린다](https://support.google.com/chrome/thread/393965657/it-s-a-bug-that-causes-the-youtube-comment-window-to-shake-up-and-down-like-an-earthquake?hl=en)는 스레드가 있었고, 국내 커뮤니티에도 [유튜브 UI 업데이트 후 댓글창 떨림](https://quasarzone.com/bbs/qf_sw/views/180771)이라는 글이 있었다. 캐시 삭제, 재로그인, 하드웨어 가속 끄기, 플래그 초기화를 다 해봤지만 안 고쳐졌다는 후기까지 똑같았다.
+
+그래서 한동안 "유튜브의 동적 댓글 로딩과 크롬의 스크롤 앵커링이 충돌해서 생기는 되먹임 루프"라고 잠정 결론을 내렸다. 스크롤 앵커링의 진동 문제는 [W3C CSS 워킹그룹에서도 사양의 알려진 결함](https://lists.w3.org/Archives/Public/public-css-archive/2019Sep/0271.html)으로 논의된 적이 있으니 그럴듯한 가설이었다.
+
+그럴듯한 가설이었지, 내 문제의 원인은 아니었다.
+
+## 시크릿 모드가 판을 갈랐다
+
+시크릿 모드로 같은 영상을 열었더니 떨림이 전혀 없었다.
+
+이 한 번의 비교로 후보가 절반 이하로 잘린다. 시크릿 모드는 **확장 프로그램이 기본적으로 비활성화**되고, 별도 캐시·쿠키·로컬스토리지를 쓰는 창이다. 여기서 정상이라면 유튜브 서버가 내려주는 코드도, 크롬 렌더링 엔진 자체도, GPU 드라이버도 용의선상에서 빠진다. 그 셋은 시크릿 모드에서도 똑같기 때문이다. 남는 건 확장 프로그램이거나 프로필에 저장된 상태뿐이다.
+
+커뮤니티 글들이 원인 규명에 실패한 이유도 여기 있었다. "많은 사람이 같은 증상을 겪는다"는 사실이 "모두 같은 원인"을 뜻하지는 않는다. 나는 남들의 증상 리포트를 보고 원인까지 빌려 쓰려다 엉뚱한 곳을 파고 있었다.
+
+## 확장을 하나씩 끄지 않고 좁히기
+
+보통 여기서 확장을 하나씩 끄면서 이분 탐색을 한다. 나는 12개를 설치해 두고 있었으니 최악의 경우 네 번, 매번 유튜브를 새로고침하며 떨림을 눈으로 확인해야 한다. 진동은 즉시 나타나지 않고 스크롤을 해야 보여서 판정 자체가 애매했다.
+
+더 빠른 길이 있다. **확장의 매니페스트를 읽으면 애초에 유튜브에서 실행조차 안 되는 것들을 공짜로 걸러낼 수 있다.** 크롬 확장은 설치 폴더에 매니페스트를 그대로 두고, 거기 `content_scripts[].matches`가 "어느 사이트에 코드를 주입할지"를 선언한다.
+
+```
+User Data/Default/Extensions/<확장 ID>/<버전>/manifest.json
+```
+
+12개를 전부 훑어보니 결과가 이랬다.
+
+| 확장 | content_scripts matches | 유튜브 실행 |
+| --- | --- | --- |
+| Google Translate | `<all_urls>` | O |
+| React Developer Tools | `<all_urls>` | O |
+| Wappalyzer | `http(s)://*/*` | O |
+| Web Paint Tool | `<all_urls>` | O |
+| Refined GitHub | `github.com` | X |
+| Hackertab | `hackertab.dev` | X |
+| 네이버 동영상 플러그인 | `*.naver.com` | X |
+| 그 외 5개 | content_scripts 없음 | X |
+
+12개가 4개로 줄었다. 게다가 4개 중 셋은 주입하는 코드의 성격만 봐도 혐의가 옅었다. React DevTools의 콘텐츠 스크립트는 후킹용 코드 몇 줄이라 파일 크기가 1KB도 안 되고, Wappalyzer는 21KB짜리로 페이지 로드 시 기술 스택을 한 번 훑고 끝난다. Google Translate는 2.3MB에 `MutationObserver`와 `getBoundingClientRect`를 쓰고 있어 유일하게 신경 쓰였다.
+
+그런데 Web Paint Tool은 성격이 달랐다. 유일하게 **CSS 파일을 주입**하고 있었다.
+
+```json
+"content_scripts": [{
+  "matches": ["<all_urls>"],
+  "all_frames": true,
+  "run_at": "document_start",
+  "js": ["/jquery-3.2.1.min.js"],
+  "css": ["/css/modal.css"]
+}]
+```
+
+모든 사이트, 모든 iframe에, 문서 파싱이 시작되기도 전에. 화면에 그림을 그리는 확장이니 자기 UI용 스타일이 필요한 건 맞다. 문제는 그 스타일이 어떻게 생겼느냐다.
+
+## 범인은 6줄
+
+`css/modal.css`를 열었더니 맨 앞이 이랬다.
+
+```css
+body {
+    height: 100%;
+}
+#content {
+    width: 100%;
+    height: 100%;
+}
+```
+
+확장 자기 모달의 레이아웃을 잡으려고 쓴 규칙인데, **선택자에 아무 네임스페이스가 없다.** 파일 아래쪽 규칙들은 `.xxflex-container`, `.xxdialog`처럼 `xx` 접두사로 충돌을 피해 놨는데, 정작 맨 앞 두 규칙만 맨몸이다. 이 6줄이 내가 방문하는 모든 페이지에 그대로 적용되고 있었다.
+
+## 왜 하필 유튜브가 부서지는가
+
+여기서 멈추지 않고 두 가지를 실제로 확인해 봤다. 확장을 지우면 증상이 사라진다는 것만으로는 "무엇이 원인인가"까지는 알 수 없기 때문이다.
+
+**첫째, 유튜브에는 `id="content"`가 진짜로 있는가.** 헤드리스 크롬으로 시청 페이지 DOM을 덤프해서 확인했다.
+
+```bash
+chrome.exe --headless=new --virtual-time-budget=15000 \
+  --dump-dom "https://www.youtube.com/watch?v=..." > yt.html
+```
+
+```html
+<div id="content" class="style-scope ytd-app">
+  <div id="frosted-glass" class="loading-without-chipbar style-scope ytd-app"></div>
+  ...
+```
+
+있었다. 그것도 마스트헤드 아래 본문 전체를 감싸는 최상위 컨테이너였다. 댓글 영역도 이 안에 들어간다.
+
+여기서 중요한 건 `class="style-scope ytd-app"`이다. 유튜브는 웹 컴포넌트로 만들어져 있지만 **Shadow DOM이 아니라 Polymer의 style-scope 방식**을 쓴다. 덤프 전체에서 shadow root는 하나도 나오지 않았다. Shadow DOM이었다면 확장이 주입한 스타일시트는 경계를 넘지 못해 애초에 이 사고가 안 났을 것이다. 유튜브의 모든 내부 요소가 light DOM에 노출돼 있어서 외부 CSS가 그대로 닿는다.
+
+덤프에서 세어 보니 초기 DOM만으로도 `#button`(4개), `#container`(3개), `#info`(2개), `#menu`(2개), `#title`, `#header`, `#items`, `#buttons`, `#label`, `#description`, `#content` 같은 짧고 흔한 id가 잔뜩 있었다. 컴포넌트 내부에서만 쓰는 id니까 짧게 지은 건데, 그게 light DOM에 그대로 드러나 있으니 전역 CSS의 지뢰밭이 된다.
+
+**둘째, 유튜브 자신의 CSS가 이걸 막아 주지는 않는가.** CSS 우선순위상 유튜브가 더 구체적인 선택자로 같은 속성을 선언해 뒀다면 확장 규칙은 무시된다. 덤프에서 찾아봤다.
+
+```css
+body{padding:0;margin:0;overflow-y:scroll}
+```
+
+`height` 선언이 없다. 막아 줄 규칙이 아예 없으니 확장의 `body { height: 100% }`가 그대로 먹는다. `#content.ytd-app`에 height를 지정하는 규칙도 찾지 못했다.
+
+그리고 이 한 줄이 결정타를 설명해 준다. 유튜브는 `body`에 `overflow-y: scroll`을 걸어 스크롤바를 항상 띄워 둔다. 평소엔 body의 height가 auto라 콘텐츠만큼 늘어나고, 실제 스크롤은 문서가 담당하니 이 선언은 스크롤바 자리만 예약하는 역할이다. 그런데 여기에 `height: 100%`가 붙는 순간 **body가 뷰포트 높이에 고정된 채 overflow는 scroll인 상태**, 즉 body 자신이 독립된 스크롤 컨테이너가 되어 버린다. 스크롤 주체가 문서에서 body로 옮겨 간다.
+
+유튜브의 댓글 로딩은 철저히 스크롤 위치 기반이다. 어디까지 내려왔는지 재서 다음 댓글 묶음을 붙이고, 붙은 만큼 높이가 변한다. 스크롤 주체가 예상과 다른 곳으로 옮겨 가면 이 측정이 서로 모순된 답을 내놓기 시작한다. 여기에 `#content`까지 `height: 100%`로 못 박혀 있으니, 늘어나야 할 컨테이너가 늘어나지 못한다. "높이를 잰다 → 레이아웃을 바꾼다 → 그 변화가 다시 측정값을 바꾼다"는 되먹임이 완성되고, 그게 화면에서는 진동으로 보인다.
+
+처음에 세웠던 스크롤 앵커링 가설이 완전히 틀린 건 아니었던 셈이다. 진동을 만드는 되먹임 루프는 실재했다. 다만 그 루프의 방아쇠가 유튜브나 크롬이 아니라 내가 설치한 확장이었을 뿐이다.
+
+## 검증
+
+Web Paint Tool을 삭제하고 유튜브를 새로고침했더니 떨림이 완전히 사라졌다. 다른 세 확장은 그대로 켜 둔 상태였으니, Google Translate를 비롯한 나머지는 무죄였다.
+
+돌아보면 DevTools로 더 빨리 갈 수도 있었다. 떨리는 요소를 선택하고 Styles 패널을 보면 적용된 규칙의 출처가 파일 경로로 찍히는데, 확장이 주입한 스타일은 `chrome-extension://iklgljbighkgbjoecoddejooldolenbj/css/modal.css`처럼 **출처에 확장 ID가 그대로 드러난다.** 이걸 먼저 봤다면 매니페스트를 뒤질 필요도 없었다. 다음엔 여기부터 본다.
+
+## 남의 페이지를 부수는 확장은 흔하다
+
+이번 건은 특이 사례가 아니라 잘 알려진 사고 유형에 속한다. 조사하면서 모아 본 대표적인 패턴들이다.
+
+**CSS 주입으로 레이아웃을 바꾸는 경우.** 이번 사례가 여기 해당한다. 다크 모드 확장은 더 유명한데, Dark Reader의 필터 모드는 [루트 요소에 `filter`를 걸어 페이지 전체를 반전](https://darkreader.org/help/en/)시킨다. 문제는 `filter`가 걸린 요소가 자손 `position: fixed`의 컨테이닝 블록이 되어 버린다는 점이다. 뷰포트에 고정돼야 할 헤더나 모달이 엉뚱한 위치에 붙는 [고장이 실제로 보고](https://github.com/ds300/jetzt/issues/171)돼 있다.
+
+**DOM을 직접 건드려 프레임워크와 충돌하는 경우.** 브라우저 번역 기능은 텍스트 노드를 `font` 태그로 감싸서 재배치하는데, React는 자기가 추적하던 노드가 사라진 걸 발견하고 `removeChild` 에러를 던지며 트리 전체를 무너뜨린다. [React 저장소에 오래된 이슈](https://github.com/facebook/react/issues/11538)가 있고, [원인과 대응을 정리한 글](https://martijnhols.nl/blog/everything-about-google-translate-crashing-react)도 나와 있을 만큼 유명하다.
+
+**속성을 주입해 하이드레이션을 깨뜨리는 경우.** Grammarly는 `data-gramm`, `data-gr-ext-installed` 같은 속성을 body에 붙이고 ColorZilla는 `cz-shortcut-listen`을 붙인다. 서버 HTML에는 없던 속성이 클라이언트에만 생기니 Next.js가 하이드레이션 불일치를 경고한다. [Next.js 저장소의 디스커션](https://github.com/vercel/next.js/discussions/71577)에 사례가 쌓여 있다. 로컬에서 원인 모를 하이드레이션 에러가 나면 시크릿 모드로 먼저 확인해 보라는 조언이 나오는 이유다.
+
+**요소를 숨겨 레이아웃을 흔드는 경우.** 광고 차단기의 cosmetic filter는 요소를 `display: none`으로 지우는데, 자리를 비우면 그만큼 아래 콘텐츠가 위로 올라온다. 지연 로딩과 겹치면 레이아웃 시프트가 생긴다.
+
+네 가지 모두 공통점이 있다. **확장은 사이트가 예상하지 못한 시점에, 예상하지 못한 방식으로 페이지를 바꾼다.** 사이트 입장에서는 방어할 수단이 사실상 없다.
+
+## 다음에 의심할 목록
+
+지금은 `body`와 `#content`가 원인이었지만, 같은 종류의 사고를 일으킬 수 있는 후보를 미리 정리해 둔다.
+
+### 위험한 선택자
+
+전역에 주입되는 스타일시트에서 아래 선택자를 보면 일단 의심한다.
+
+- **태그 선택자**: `body`, `html`, `div`, `a`, `img`, `button`, `input`, `p`, `ul`, `li`
+- **흔한 id**: `#content`, `#contents`, `#container`, `#header`, `#footer`, `#main`, `#app`, `#root`, `#title`, `#info`, `#menu`, `#items`, `#buttons`, `#label`, `#description`, `#overlay`, `#modal`, `#wrapper`
+- **흔한 클래스**: `.container`, `.content`, `.title`, `.card`, `.modal`, `.overlay`, `.active`, `.show`, `.hidden`, `.disabled`, `.badge`, `.tooltip`
+- **전역 리셋**: `* { margin: 0; padding: 0 }`, `* { box-sizing: border-box }`
+
+특히 id는 방심하기 쉽다. 컴포넌트 내부에서만 쓰는 id라 짧게 지었더라도, Shadow DOM으로 격리하지 않았다면 전역 선택자에 그대로 노출된다.
+
+### 위험한 속성
+
+주입된 규칙이 아래 속성을 건드리면 시각적 변형에서 그치지 않고 레이아웃 구조 자체가 바뀐다.
+
+- **`height` / `min-height` / `max-height`** — 늘어나야 할 컨테이너를 고정하면 콘텐츠가 잘리거나 측정 루프가 생긴다. 이번 사례.
+- **`overflow`** — `hidden`/`auto`/`scroll` 어느 쪽이든 새 스크롤 컨테이너를 만든다. `position: sticky`의 기준과 스크롤 앵커링 동작이 통째로 바뀐다.
+- **`transform` / `filter` / `backdrop-filter` / `will-change` / `contain` / `perspective`** — 가장 악명 높은 그룹. 값이 `none`이 아니면 그 요소가 자손 `position: fixed`의 컨테이닝 블록이 된다. 화면 고정 요소가 조상 박스 기준으로 붙어 버린다.
+- **`position`** — 스태킹 컨텍스트와 기준점이 바뀐다.
+- **`box-sizing`**, **`width: 100%` + padding** — 폭 계산이 어긋나 가로 오버플로가 난다. 가로 스크롤바가 생기면 뷰포트 폭이 줄고, 줄면 오버플로가 해소돼 스크롤바가 사라지고, 사라지면 다시 넘친다. 전형적인 진동 패턴이다.
+- **`font-family` / `font-size` / `line-height`** — 텍스트 높이 측정값이 달라진다. 유튜브 댓글의 "더보기" 판정처럼 높이를 재서 UI를 결정하는 곳이 오작동한다.
+- **`display`** — 일반 컨테이너에 `flex`나 `grid`가 얹히면 자식 배치 규칙이 통째로 바뀐다.
+- **`zoom`** — 서브픽셀 반올림 때문에 두 값 사이를 왕복하는 떨림이 생긴다.
+- **`!important`** — 위 모든 항목의 파괴력을 증폭시킨다. 사이트가 더 구체적인 선택자로 방어해 둔 경우까지 뚫는다.
+
+### 진동이 생기는 조건
+
+떨림이라는 증상 자체는 "A가 바뀌면 B가 바뀌고, B가 바뀌면 A가 원래대로 돌아가는" 되먹임이 있을 때 나타난다. 정적인 깨짐과 달리 원인이 한 군데가 아니라 순환 구조라서 찾기 어렵다.
+
+- 스크롤바 출몰 루프 (폭이 줄었다 늘었다)
+- 높이를 재서 클래스를 토글하는데 그 클래스가 높이를 바꾸는 경우
+- `ResizeObserver` 콜백 안에서 크기를 다시 바꾸는 경우
+- 스크롤 이벤트 핸들러 안에서 스크롤 위치를 보정하는 경우
+
+## 배운 것
+
+- **"사이트 버그"의 상당수는 내 브라우저 버그다.** 같은 증상 리포트가 많다고 원인까지 같지는 않다. 남의 진단을 빌려 오기 전에 내 환경부터 갈라내야 했다.
+- **시크릿 모드는 가장 값싼 이분 탐색이다.** 확장·프로필 상태 전체를 한 번에 제외시킨다. 재현 조건을 좁히는 데 10초면 충분하다.
+- **확장을 하나씩 끄기 전에 매니페스트를 읽자.** `content_scripts[].matches`만 봐도 12개가 4개로 줄었다. 더 빠른 건 DevTools Styles 패널에서 규칙 출처를 확인하는 것이고, `chrome-extension://` 경로가 보이면 그걸로 끝이다.
+- **남의 페이지에 스타일을 주입한다면 선택자를 반드시 격리하자.** 이 확장은 파일 아래쪽에서는 `xx` 접두사로 충돌을 피해 놓고 맨 앞 두 규칙만 놓쳤다. Shadow DOM에 UI를 담거나, 최소한 모든 선택자에 고유 접두사를 붙였다면 없었을 사고다.
