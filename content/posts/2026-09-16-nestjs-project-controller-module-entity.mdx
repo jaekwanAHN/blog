@@ -1,0 +1,315 @@
+---
+title: "NestJS 시작하기: 프로젝트 생성부터 Controller, Module, Entity까지"
+date: "2026-09-16"
+description: "Nest CLI로 프로젝트를 만들고, 요청을 처리하는 Controller와 기능을 묶는 Module, 데이터 구조를 표현하는 Entity의 역할을 예제로 정리한다."
+tags: ["NestJS", "TypeScript", "Backend", "TypeORM"]
+---
+
+NestJS를 처음 접하면 파일마다 붙어 있는 `@Controller()`, `@Module()`, `@Entity()` 같은 데코레이터부터 눈에 들어온다. 각각을 따로 외우기보다 **HTTP 요청이 들어와 데이터베이스에 닿기까지 어떤 역할을 맡는지** 연결해서 보면 구조를 이해하기 쉽다.
+
+이 글에서는 Nest CLI로 프로젝트를 만들고, 간단한 사용자 조회 API를 예로 들어 Controller, Module, Entity의 역할을 정리한다.
+
+## 1. NestJS 프로젝트 만들기
+
+NestJS는 Node.js 위에서 동작하므로 먼저 Node.js가 설치되어 있어야 한다. 버전을 확인한다.
+
+```bash
+node -v
+npm -v
+```
+
+이어서 Nest CLI를 전역으로 설치하고 프로젝트를 생성한다.
+
+```bash
+npm install -g @nestjs/cli
+nest new nest-study
+```
+
+전역 설치 없이 `npx`로 바로 실행해도 된다.
+
+```bash
+npx @nestjs/cli new nest-study
+```
+
+명령을 실행하면 사용할 패키지 매니저를 묻는다. `npm`, `yarn`, `pnpm` 중 현재 사용하는 것을 선택하면 프로젝트 뼈대와 의존성이 함께 준비된다.
+
+생성한 폴더로 이동해 개발 서버를 실행한다.
+
+```bash
+cd nest-study
+npm run start:dev
+```
+
+기본 포트는 `3000`이다. 브라우저에서 `http://localhost:3000`에 접속해 `Hello World!`가 보이면 준비가 끝났다. `start:dev`는 파일 변경을 감지해 서버를 다시 실행해 준다.
+
+## 2. 처음 생성되는 파일 살펴보기
+
+주요 파일은 `src` 폴더에 있다.
+
+```text
+src/
+├── app.controller.ts       # HTTP 요청을 받는 진입점
+├── app.controller.spec.ts  # Controller 테스트
+├── app.module.ts           # 애플리케이션의 루트 Module
+├── app.service.ts          # 비즈니스 로직을 담당하는 Provider
+└── main.ts                 # 애플리케이션 실행 파일
+```
+
+`main.ts`는 `AppModule`을 이용해 Nest 애플리케이션을 만들고 서버를 시작한다.
+
+```ts
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  await app.listen(process.env.PORT ?? 3000);
+}
+
+bootstrap();
+```
+
+여기서 중요한 출발점은 `AppModule`이다. NestJS는 루트 Module에서 시작해 연결된 하위 Module, Controller, Provider를 찾아 애플리케이션 구조를 구성한다.
+
+## 3. Controller: 요청을 받고 응답하기
+
+Controller는 클라이언트의 HTTP 요청을 받는다. URL과 HTTP 메서드를 특정 메서드에 연결하고, Service를 호출한 뒤 결과를 응답하는 역할을 한다.
+
+사용자 기능용 Controller는 CLI로 만들 수 있다.
+
+```bash
+nest generate controller users
+# 축약형
+nest g co users
+```
+
+간단한 조회 API를 작성하면 다음과 같다.
+
+```ts
+import { Controller, Get, Param } from '@nestjs/common';
+
+@Controller('users')
+export class UsersController {
+  @Get()
+  findAll() {
+    return [
+      { id: 1, name: 'Kim' },
+      { id: 2, name: 'Lee' },
+    ];
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return { id: Number(id), name: 'Kim' };
+  }
+}
+```
+
+- `@Controller('users')`: 이 Controller의 기본 경로를 `/users`로 지정한다.
+- `@Get()`: `GET /users` 요청을 메서드와 연결한다.
+- `@Get(':id')`: `GET /users/1`처럼 경로 변수가 있는 요청을 처리한다.
+- `@Param('id')`: URL의 `id` 값을 꺼낸다.
+
+예제처럼 Controller 안에 데이터를 직접 넣을 수는 있지만, 실제 애플리케이션에서는 Controller를 얇게 유지하는 편이 좋다. 검증된 입력을 Service에 전달하고 결과를 응답하는 데 집중하며, 핵심 비즈니스 로직은 `UsersService` 같은 Provider에 둔다.
+
+## 4. Module: 기능의 경계 만들기
+
+Module은 관련된 Controller와 Provider를 하나의 기능 단위로 묶는다. 사용자 기능이라면 `UsersModule`, 주문 기능이라면 `OrdersModule`을 만드는 식이다.
+
+```bash
+nest generate module users
+# 축약형
+nest g mo users
+```
+
+Service도 함께 만든다면 다음 명령을 사용한다.
+
+```bash
+nest generate service users
+# 축약형
+nest g s users
+```
+
+`users.module.ts`는 보통 다음과 같은 모습이다.
+
+```ts
+import { Module } from '@nestjs/common';
+import { UsersController } from './users.controller';
+import { UsersService } from './users.service';
+
+@Module({
+  controllers: [UsersController],
+  providers: [UsersService],
+})
+export class UsersModule {}
+```
+
+`@Module()`의 주요 속성은 네 가지다.
+
+- `controllers`: 이 Module이 처리할 HTTP Controller
+- `providers`: Nest의 의존성 주입 컨테이너가 관리할 Service, Repository 등의 객체
+- `imports`: 이 Module에서 사용할 다른 Module
+- `exports`: 다른 Module에서도 사용할 수 있도록 공개할 Provider
+
+만든 기능 Module은 루트 Module에 연결해야 한다.
+
+```ts
+import { Module } from '@nestjs/common';
+import { UsersModule } from './users/users.module';
+
+@Module({
+  imports: [UsersModule],
+})
+export class AppModule {}
+```
+
+CLI로 Module과 Controller를 만들면 Nest CLI가 가까운 Module을 찾아 등록해 주는 경우가 많다. 그래도 생성 후 `controllers`, `providers`, `imports`에 원하는 클래스가 제대로 들어갔는지 확인하는 습관이 좋다.
+
+## 5. Entity: 데이터베이스의 구조 표현하기
+
+Entity는 애플리케이션에서 다루는 데이터와 데이터베이스 테이블의 구조를 연결한 클래스다. 중요한 점은 **Entity가 NestJS 자체 개념은 아니라는 것**이다. TypeORM 같은 ORM을 사용할 때 등장하며, Prisma처럼 다른 도구를 쓰면 모델을 정의하는 방식도 달라진다.
+
+TypeORM과 SQLite로 예제를 구성하려면 패키지를 설치한다.
+
+```bash
+npm install @nestjs/typeorm typeorm sqlite3
+```
+
+`src/users/user.entity.ts`에 사용자 Entity를 만든다.
+
+```ts
+import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
+
+@Entity()
+export class User {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column({ length: 50 })
+  name: string;
+
+  @Column({ unique: true })
+  email: string;
+
+  @Column({ default: true })
+  isActive: boolean;
+}
+```
+
+- `@Entity()`: 이 클래스가 TypeORM Entity임을 표시한다.
+- `@PrimaryGeneratedColumn()`: 자동으로 증가하는 기본 키를 만든다.
+- `@Column()`: 클래스 프로퍼티를 테이블 컬럼과 연결한다.
+- `length`, `unique`, `default`: 컬럼의 제약 조건과 기본값을 설정한다.
+
+Entity를 만들기만 해서는 Repository를 주입할 수 없다. 해당 기능 Module에 `TypeOrmModule.forFeature()`로 등록해야 한다.
+
+```ts
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { User } from './user.entity';
+import { UsersController } from './users.controller';
+import { UsersService } from './users.service';
+
+@Module({
+  imports: [TypeOrmModule.forFeature([User])],
+  controllers: [UsersController],
+  providers: [UsersService],
+})
+export class UsersModule {}
+```
+
+이제 `UsersService`에서 `Repository<User>`를 주입받아 데이터베이스를 조회할 수 있다.
+
+```ts
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { User } from './user.entity';
+
+@Injectable()
+export class UsersService {
+  constructor(
+    @InjectRepository(User)
+    private readonly usersRepository: Repository<User>,
+  ) {}
+
+  findAll(): Promise<User[]> {
+    return this.usersRepository.find();
+  }
+}
+```
+
+데이터베이스 연결 설정은 루트 Module에 둔다.
+
+```ts
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { UsersModule } from './users/users.module';
+
+@Module({
+  imports: [
+    TypeOrmModule.forRoot({
+      type: 'sqlite',
+      database: 'db.sqlite',
+      autoLoadEntities: true,
+      synchronize: true,
+    }),
+    UsersModule,
+  ],
+})
+export class AppModule {}
+```
+
+`autoLoadEntities: true`는 각 기능 Module의 `forFeature()`에 등록된 Entity를 자동으로 연결한다. `synchronize: true`는 Entity 변경에 맞춰 데이터베이스 스키마를 자동 변경하므로 학습과 로컬 개발에는 편하지만, **운영 환경에서는 데이터 손실 위험 때문에 사용하지 않는 것이 원칙**이다. 운영에서는 migration으로 스키마 변경 이력을 관리한다.
+
+## 6. 세 요소의 관계
+
+요청 흐름을 정리하면 다음과 같다.
+
+```text
+클라이언트
+  ↓ HTTP 요청
+Controller
+  ↓ 메서드 호출
+Service
+  ↓ Repository 사용
+Entity ↔ 데이터베이스 테이블
+
+Module: 위 구성요소를 기능 단위로 묶고 의존성을 연결
+```
+
+예를 들어 `GET /users` 요청은 `UsersController.findAll()`에 도착하고, Controller는 `UsersService.findAll()`을 호출한다. Service는 `User` Entity의 Repository로 데이터를 읽는다. `UsersModule`은 이 과정에 필요한 Controller, Service, Repository가 서로 연결되도록 범위를 정의한다.
+
+## 7. 자주 쓰는 생성 명령
+
+```bash
+# 프로젝트 생성
+nest new project-name
+
+# 구성요소 생성
+nest g module users
+nest g controller users
+nest g service users
+
+# Module, Controller, Service, DTO 등을 포함한 CRUD 뼈대 생성
+nest g resource users
+```
+
+`nest g resource users`는 REST API, GraphQL 등 전송 방식을 선택해 CRUD 기본 구조를 한 번에 만들 때 유용하다. 다만 처음 공부할 때는 Module, Controller, Service를 하나씩 만들어 보며 각각 어디에 등록되는지 확인하는 편이 구조를 익히는 데 도움이 된다.
+
+## 마무리
+
+NestJS의 기본 구조는 역할 분담으로 이해하면 단순하다.
+
+- Controller는 HTTP 요청과 응답을 담당한다.
+- Module은 관련 기능을 묶고 의존성의 범위를 정한다.
+- Entity는 ORM을 통해 데이터베이스 테이블의 구조를 표현한다.
+- Service는 Controller와 데이터 접근 사이에서 비즈니스 로직을 담당한다.
+
+처음에는 `nest new`로 기본 구조를 확인하고, 작은 기능 Module을 하나 추가한 뒤 Controller → Service → Entity 순서로 연결해 보면 전체 요청 흐름이 자연스럽게 보이기 시작한다.
+
+## 참고
+
+- [NestJS CLI Usage](https://docs.nestjs.com/cli/usages)
+- [NestJS Modules](https://docs.nestjs.com/modules)
+- [NestJS Database / TypeORM](https://docs.nestjs.com/techniques/database)
