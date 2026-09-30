@@ -1,0 +1,810 @@
+---
+title: "BFS 구현 정리: 도달 가능성부터 최단 경로와 상태 확장까지"
+date: "2026-09-24"
+description: "BFS의 거리 순서와 방문 시점을 기준으로 도달 가능성, 최단 경로 복원·개수, 다중 시작점, 상태 확장, 0-1 BFS를 구현하고 큐·레벨별 탐색 방식을 비교한다."
+tags: ["algorithm", "JavaScript", "BFS", "최단 경로", "그래프"]
+---
+
+BFS(Breadth-First Search, 너비 우선 탐색)는 **시작점에서 간선 수가 가까운 정점부터 탐색하는 방법**이다. 한 경로를 깊게 따라가는 DFS와 달리, 거리 0인 시작점 다음에는 거리 1, 그다음에는 거리 2인 정점을 처리한다.
+
+함께 읽기: [DFS 구현 정리: 도달 가능성, 백트래킹, 후위 순회와 메모이제이션](/blog/2026-09-24-dfs-patterns). 이 글도 기본 개념, 목적별 구현, 구현 차이와 복잡도 순서로 구성한다.
+
+BFS 역시 목적에 따라 코드가 달라진다. 도달 여부만 필요하면 방문 여부로 충분하지만, 최단 경로의 개수를 세려면 **같은 최단 거리로 다시 도착하는 경우**를 합산해야 한다. 벽을 부술 수 있다면 같은 좌표라도 남은 기회가 다를 수 있다.
+
+예제는 JavaScript이며, 별도 설명이 없으면 정점 번호는 `0`부터 `graph.length - 1`까지, 시작·목표 정점과 인접 정점 번호는 유효하다고 가정한다. 기본 그래프는 중복 간선이 없는 인접리스트이고 각 간선의 이동 비용은 1이다. 문법만 다른 변형 대신 **큐 표현, 방문 시점, 레벨 처리, 상태와 결과의 저장 방식이 달라지는 구현**을 비교한다.
+
+## 1. BFS의 기본 동작: 가까운 거리부터 처리한다
+
+다음 방향 그래프를 보자.
+
+```txt
+0 → 1 → 3 → 4
+│       ↑
+└→ 2 ──┘
+
+거리 0: 0
+거리 1: 1, 2
+거리 2: 3
+거리 3: 4
+```
+
+```js
+const graph = [
+  [1, 2],
+  [3],
+  [3],
+  [4],
+  [],
+];
+```
+
+큐는 **먼저 넣은 것을 먼저 꺼내는 FIFO** 자료구조다. 거리 `d`의 정점들을 처리하며 발견한 거리 `d + 1`의 정점은 뒤에 넣는다. 그래서 더 가까운 정점이 항상 먼저 처리된다.
+
+처음 정점 `v`를 발견한 거리가 `d`라고 하자. 더 짧은 경로가 있었다면 그 경로의 직전 정점이 더 먼저 처리되어 `v`도 먼저 발견됐어야 한다. 따라서 **모든 간선 비용이 같다면 최초 발견 시 최단 거리가 확정된다**.
+
+간선 비용이 다르면 간선 수와 비용 합이 일치하지 않는다. 가중치가 0·1이면 뒤에서 다루는 0-1 BFS, 일반적인 음이 아닌 가중치라면 다익스트라 같은 별도 알고리즘이 필요하다.
+
+## 2. 도달 가능성과 방문 시점
+
+### 2-1. 큐에 넣을 때 방문 표시
+
+```js
+function reachableBfs(graph, start) {
+  const visited = new Uint8Array(graph.length);
+  const queue = [start];
+  const order = [];
+  let head = 0;
+  visited[start] = 1;
+
+  while (head < queue.length) {
+    const v = queue[head++];
+    order.push(v);
+    for (const next of graph[v]) {
+      if (visited[next]) continue;
+      visited[next] = 1; // 발견 즉시 예약: 다른 정점이 중복 삽입하지 않음
+      queue.push(next);
+    }
+  }
+  return { visited, order };
+}
+
+console.log(reachableBfs([[1, 2], [3], [3], [4], []], 0).order);
+// [0, 1, 2, 3, 4]
+```
+
+`3`을 `1`에서 처음 발견하면 바로 표시한다. 나중에 `2`에서 `3`을 만나도 이미 예약되어 있으므로 다시 넣지 않는다. 정점마다 큐에 최대 한 번 들어가고, 방문 표시는 탐색 전체에서 유지한다.
+
+도달 여부만 필요하면 목표를 처음 발견하거나 꺼냈을 때 종료해도 된다. 시작점이 목표인 경우도 함께 처리한다.
+
+### 2-2. 큐에서 꺼낼 때 방문 표시
+
+```js
+function reachableBfsDequeue(graph, start) {
+  const visited = new Uint8Array(graph.length);
+  const queue = [start];
+  const order = [];
+  let head = 0;
+
+  while (head < queue.length) {
+    const v = queue[head++];
+    if (visited[v]) continue; // 중복으로 예약된 항목을 건너뜀
+    visited[v] = 1;
+    order.push(v);
+
+    for (const next of graph[v]) {
+      if (!visited[next]) queue.push(next);
+    }
+  }
+  return { visited, order };
+}
+
+console.log(reachableBfsDequeue([[1, 2], [3], [3], [4], []], 0).order);
+// [0, 1, 2, 3, 4]
+```
+
+도달 가능성은 올바르게 구하지만, `3`을 꺼내기 전에 `1`, `2`가 각각 `3`을 넣을 수 있다. 꺼낼 때의 중복 검사 덕분에 각 정점의 인접리스트는 한 번만 확장한다. 그 검사를 빼면 중복 확장이 연쇄적으로 늘어날 수 있다.
+
+이 방식을 최단 거리·부모 기록에 적용하려면 큐에 후보 거리와 부모도 함께 저장하고 **처음 꺼낼 때 확정**해야 한다. 삽입될 때마다 공용 거리·부모를 덮어쓰면 더 늦게 예약된 경로로 정보가 바뀔 수 있다. 일반적인 BFS에서는 넣을 때 표시하는 편이 간단하다.
+
+| 방문 시점 | 같은 정점의 큐 중복 | 최악 시간 | 보조 공간 |
+| --- | --- | --- | --- |
+| 넣을 때 | 없음 | `O(V + E)` | `O(V)` |
+| 꺼낼 때, 중복 확장 방지 | 가능 | `O(V + E)` | `O(V + E)` |
+
+여기서 `E`는 인접리스트 전체 항목 수다. 방문 배열 초기화는 `O(V)`이며 간선 검사는 도달 가능한 부분에 한정된다. 인접행렬은 정점마다 이웃 후보 `V`개를 확인하므로 전체 순회가 `O(V²)`가 될 수 있다.
+
+## 3. JavaScript에서 큐를 구현하는 방법
+
+### 3-1. 배열 + head 인덱스
+
+위 코드처럼 `push`로 넣고 `queue[head++]`로 꺼내면 된다. 큰 입력에서 반복적인 `shift()`는 피한다. 배열 앞 원소 삭제는 뒤 원소의 인덱스 이동 비용이 발생할 수 있어 BFS의 선형 시간 예산을 깨뜨릴 수 있다.
+
+head 방식은 이미 처리한 원소도 배열에 남는다. 따라서 저장량은 현재 대기 수가 아니라 **누적 삽입 수**에 비례한다. 객체를 넣는 경우 처리한 자리를 `undefined`로 바꾸면 참조를 끊을 수 있지만, 배열 용량 자체가 줄어드는 것은 아니다.
+
+### 3-2. 삽입 수의 상한을 알면 고정 배열
+
+정점 번호가 32비트 부호 없는 정수 범위에 있고, 각 정점을 최대 한 번 삽입한다면 길이 `V`의 TypedArray를 쓸 수 있다.
+
+```js
+function bfsDistancesTyped(graph, start) {
+  const dist = Array(graph.length).fill(-1);
+  const queue = new Uint32Array(graph.length);
+  let head = 0;
+  let tail = 0;
+  queue[tail++] = start;
+  dist[start] = 0;
+
+  while (head < tail) {
+    const v = queue[head++];
+    for (const next of graph[v]) {
+      if (dist[next] !== -1) continue;
+      dist[next] = dist[v] + 1;
+      queue[tail++] = next;
+    }
+  }
+  return dist;
+}
+
+console.log(bfsDistancesTyped([[1, 2], [3], [3], [4], [], []], 0));
+// [0, 1, 1, 2, 3, -1]
+```
+
+큐 원소 데이터는 `4 × V`바이트이며 다른 배열과 런타임 공간은 별도다. 꺼낼 때 방문 표시를 하여 중복 삽입한다면 길이 `V`로는 부족할 수 있다. 고정 크기는 알고리즘의 삽입 횟수 보장에서 정해야 한다.
+
+### 3-3. 사용한 공간을 재활용하는 원형 큐
+
+```js
+class RingQueue {
+  constructor(capacity = 4) {
+    this.items = Array(Math.max(1, capacity));
+    this.head = 0;
+    this.size = 0;
+  }
+
+  push(value) {
+    if (this.size === this.items.length) {
+      const grown = Array(this.items.length * 2);
+      for (let i = 0; i < this.size; i++) {
+        grown[i] = this.items[(this.head + i) % this.items.length];
+      }
+      this.items = grown;
+      this.head = 0;
+    }
+    const tail = (this.head + this.size) % this.items.length;
+    this.items[tail] = value;
+    this.size++;
+  }
+
+  pop() {
+    if (this.size === 0) return undefined;
+    const value = this.items[this.head];
+    this.items[this.head] = undefined;
+    this.head = (this.head + 1) % this.items.length;
+    this.size--;
+    return value;
+  }
+}
+
+const queue = new RingQueue(2);
+queue.push(10);
+queue.push(20);
+console.log(queue.pop()); // 10
+queue.push(30); // 앞에서 비운 공간 재사용
+queue.push(40); // 용량이 부족하면 두 배로 확장
+console.log([queue.pop(), queue.pop(), queue.pop()]); // [20, 30, 40]
+```
+
+`pop`은 여기서 큐의 **앞**을 꺼내는 사용자 정의 메서드다. BFS에서는 `queue.push(start)`, `while (queue.size > 0)`, `queue.pop()`으로 사용한다. 삽입은 분할 상환 `O(1)`, 삭제는 `O(1)`이고 용량은 최대 동시 대기 수에 비례한다. 자동으로 축소하지는 않는다.
+
+연결 리스트 큐도 양 끝 포인터를 유지하면 넣기·꺼내기가 `O(1)`이다. 다만 원소마다 노드 객체와 연결 참조가 필요하다. 단발성 그래프 BFS에서는 head 배열이 간단하고, 큐를 오래 재사용하거나 소비한 공간을 재활용해야 하면 원형 큐를 검토한다.
+
+## 4. 최단 거리: 거리 배열 또는 레벨 단위 처리
+
+### 4-1. 거리 배열을 방문 표시로 겸용
+
+```js
+function bfsDistances(graph, start) {
+  const dist = Array(graph.length).fill(-1);
+  const queue = [start];
+  let head = 0;
+  dist[start] = 0;
+
+  while (head < queue.length) {
+    const v = queue[head++];
+    for (const next of graph[v]) {
+      if (dist[next] !== -1) continue;
+      dist[next] = dist[v] + 1;
+      queue.push(next);
+    }
+  }
+  return dist;
+}
+
+console.log(bfsDistances([[1, 2], [3], [3], [4], [], []], 0));
+// [0, 1, 1, 2, 3, -1]
+```
+
+`-1`은 미방문, `0`은 시작점의 정상 거리다. `if (dist[next])`처럼 참·거짓으로 구분하면 거리 0을 잘못 처리하므로 명시적으로 비교한다. `Infinity`를 미도달 값으로 쓰는 구현도 가능하다.
+
+### 4-2. 같은 레벨의 끝을 고정
+
+트리의 레벨별 출력이나 “한 번에 주변으로 퍼진 뒤 1초 경과” 같은 문제는 레벨 경계를 직접 두면 편하다.
+
+```js
+function bfsLevels(graph, start) {
+  const visited = new Uint8Array(graph.length);
+  const queue = [start];
+  const levels = [];
+  let head = 0;
+  visited[start] = 1;
+
+  while (head < queue.length) {
+    const end = queue.length; // 이번 레벨의 끝을 확정
+    const level = [];
+    while (head < end) {
+      const v = queue[head++];
+      level.push(v);
+      for (const next of graph[v]) {
+        if (visited[next]) continue;
+        visited[next] = 1;
+        queue.push(next);
+      }
+    }
+    levels.push(level);
+  }
+  return levels;
+}
+
+console.log(bfsLevels([[1, 2], [3], [3], [4], []], 0));
+// [[0], [1, 2], [3], [4]]
+```
+
+내부 반복문을 `head < queue.length`로 쓰면 새로 넣은 다음 레벨까지 함께 처리한다. 이번 레벨이 시작할 때의 끝을 저장해야 한다. 레벨 번호가 곧 시작점으로부터의 최단 거리다.
+
+### 4-3. 현재 레벨과 다음 레벨을 별도 배열로 유지
+
+```js
+function bfsFrontiers(graph, start) {
+  const visited = new Uint8Array(graph.length);
+  const levels = [];
+  let current = [start];
+  visited[start] = 1;
+
+  while (current.length > 0) {
+    levels.push(current);
+    const nextLevel = [];
+    for (const v of current) {
+      for (const next of graph[v]) {
+        if (visited[next]) continue;
+        visited[next] = 1;
+        nextLevel.push(next);
+      }
+    }
+    current = nextLevel;
+  }
+  return levels;
+}
+
+console.log(bfsFrontiers([[1, 2], [3], [3], [4], []], 0));
+// [[0], [1, 2], [3], [4]]
+```
+
+거리 배열, 레벨 경계, 두 배열은 모두 같은 거리 순서를 표현한다. 시간은 `O(V + E)`, 보조 공간은 최악 `O(V)`다. 두 배열 방식에서 `levels`에 저장하지 않고 바로 처리하면 과거 레벨 배열은 더 이상 보관할 필요가 없다. 단, 전체 방문 배열은 여전히 필요하다.
+
+레벨 처리를 재귀로 감쌀 수도 있지만 호출 깊이가 레벨 수만큼 쌓일 수 있다. BFS에 필요한 것은 FIFO 또는 레벨 순서이며, 재귀로 바꾸는 것 자체에 이점이 있는 것은 아니다.
+
+## 5. 최단 경로 하나, 개수, 모든 최단 경로
+
+### 5-1. 부모 하나를 저장해 경로 복원
+
+```js
+function shortestPath(graph, start, target) {
+  const dist = Array(graph.length).fill(-1);
+  const parent = Array(graph.length).fill(-1);
+  const queue = [start];
+  let head = 0;
+  dist[start] = 0;
+
+  while (head < queue.length) {
+    const v = queue[head++];
+    if (v === target) break;
+    for (const next of graph[v]) {
+      if (dist[next] !== -1) continue;
+      dist[next] = dist[v] + 1;
+      parent[next] = v;
+      queue.push(next);
+    }
+  }
+
+  if (dist[target] === -1) return null;
+  const path = [];
+  for (let v = target; v !== -1; v = parent[v]) path.push(v);
+  return path.reverse();
+}
+
+console.log(shortestPath([[1, 2], [3], [3], [4], []], 0, 4));
+// [0, 1, 3, 4]
+console.log(shortestPath([[], []], 0, 1)); // null
+console.log(shortestPath([[]], 0, 0)); // [0]
+```
+
+동일한 길이의 경로가 여러 개라면 인접리스트 순서에 따라 하나를 선택한다. 사전순 최소 경로가 필요하다면 순서 규칙도 별도로 정해야 한다.
+
+큐에 `{ v, path: [...path, next] }`를 넣어 경로 전체를 복사하는 방법도 있다. 복원 단계는 없어지지만 발견할 때마다 경로를 복사한다. 긴 사슬에서도 복사량의 합이 `O(V²)`가 될 수 있어, 경로 하나를 구할 때는 부모 저장이 효율적이다.
+
+### 5-2. 최단 경로 개수: 같은 거리로 도착하면 더한다
+
+```js
+function countShortestPaths(graph, start, target) {
+  const dist = Array(graph.length).fill(-1);
+  const ways = Array(graph.length).fill(0n);
+  const queue = [start];
+  let head = 0;
+  dist[start] = 0;
+  ways[start] = 1n;
+
+  while (head < queue.length) {
+    const v = queue[head++];
+    for (const next of graph[v]) {
+      if (dist[next] === -1) {
+        dist[next] = dist[v] + 1;
+        queue.push(next);
+      }
+      if (dist[next] === dist[v] + 1) {
+        ways[next] += ways[v];
+      }
+    }
+  }
+  return { distance: dist[target], count: ways[target] };
+}
+
+console.log(countShortestPaths([[1, 2], [3], [3], [4], []], 0, 4));
+// { distance: 3, count: 2n }
+console.log(countShortestPaths([[], []], 0, 1));
+// { distance: -1, count: 0n }
+```
+
+처음 발견한 경우에도 아래 `if`에서 개수를 더하므로 중복 합산하지 않는다. 이미 방문했더라도 같은 최단 거리로 이어지는 간선이면 개수를 더하고, 큐에는 다시 넣지 않는다.
+
+거리 `d`인 정점을 꺼낼 때는 거리 `d - 1`인 정점들이 모두 처리되어 경로 수가 확정되어 있다. 목표를 **처음 발견하자마자** 종료하면 다른 부모에서 오는 경로를 놓칠 수 있다. 목표를 꺼내는 시점에는 그 경로 수가 완성되지만, 위 예제는 단순하게 전체 탐색을 수행한다.
+
+처리하는 정점·간선 수는 `O(V + E)`, 공간은 `O(V)`다. BigInt 덧셈의 실제 비용은 수의 비트 길이에 비례해 증가할 수 있다. 중복 간선이 있으면 간선마다 다른 경로로 합산하므로, 정점 열이 같은 경로를 하나로 취급하려면 인접리스트의 중복을 제거해야 한다.
+
+### 5-3. 모든 최단 경로: 가능한 부모를 전부 저장
+
+```js
+function shortestParentDag(graph, start) {
+  const dist = Array(graph.length).fill(-1);
+  const parents = Array.from({ length: graph.length }, () => []);
+  const queue = [start];
+  let head = 0;
+  dist[start] = 0;
+
+  while (head < queue.length) {
+    const v = queue[head++];
+    for (const next of graph[v]) {
+      if (dist[next] === -1) {
+        dist[next] = dist[v] + 1;
+        queue.push(next);
+      }
+      if (dist[next] === dist[v] + 1) parents[next].push(v);
+    }
+  }
+  return { dist, parents };
+}
+
+function allShortestPaths(graph, start, target) {
+  const { dist, parents } = shortestParentDag(graph, start);
+  if (dist[target] === -1) return [];
+  const result = [];
+  const reversed = [target];
+
+  function restore(v) {
+    if (v === start) {
+      result.push([...reversed].reverse());
+      return;
+    }
+    for (const parent of parents[v]) {
+      reversed.push(parent);
+      restore(parent);
+      reversed.pop();
+    }
+  }
+
+  restore(target);
+  return result;
+}
+
+console.log(allShortestPaths([[1, 2], [3], [3], [4], []], 0, 4));
+// [[0, 1, 3, 4], [0, 2, 3, 4]]
+```
+
+이전 코드 블록의 `shortestParentDag`를 함께 사용하는 반복문 복원도 가능하다.
+
+```js
+function allShortestPathsIterative(graph, start, target) {
+  const { dist, parents } = shortestParentDag(graph, start);
+  if (dist[target] === -1) return [];
+  const result = [];
+  const stack = [{ v: target, reversed: [target] }];
+
+  while (stack.length > 0) {
+    const { v, reversed } = stack.pop();
+    if (v === start) {
+      result.push([...reversed].reverse());
+      continue;
+    }
+    for (let i = parents[v].length - 1; i >= 0; i--) {
+      const parent = parents[v][i];
+      stack.push({ v: parent, reversed: [...reversed, parent] });
+    }
+  }
+  return result;
+}
+
+console.log(allShortestPathsIterative([[1, 2], [3], [3], [4], []], 0, 4));
+// [[0, 1, 3, 4], [0, 2, 3, 4]]
+```
+
+BFS로 최단 경로에 속하는 부모 간선을 모은 뒤, 그 구조를 DFS로 나열하는 조합이다. 부모를 따라가면 거리가 정확히 1씩 줄어들어 사이클이 없다. 따라서 복원에서 별도 방문 표시는 필요 없다.
+
+재귀는 공유 경로를 수정·복구하고, 위 반복문은 대기 분기마다 경로를 복사한다. 복사를 줄이려면 DFS 글의 프레임 스택처럼 현재 경로 하나와 다음 부모 인덱스를 저장할 수 있다.
+
+부모 구조 생성은 시간·공간 `O(V + E)`다. 이후 경로가 `P`개이고 각 최단 경로의 간선 수가 `D`라면 결과 저장만 `O(P(D + 1))`이 든다. 반복문 복사 버전은 대기 중인 경로 복사본 공간도 필요하다. 최단 경로라도 개수는 지수적으로 많을 수 있다.
+
+### 모든 단순 경로와 모든 최단 경로는 다르다
+
+모든 단순 경로가 목적이면 거리 조건을 만족하지 않는 긴 경로도 남겨야 한다. 그때는 정점별 전역 방문 표시로 경로를 합칠 수 없다.
+
+BFS로 모든 단순 경로를 나열하려면 큐에 현재 정점뿐 아니라 **각 경로와 해당 경로에서 사용한 정점 집합**을 담아야 한다. DFS의 상태 복사 구현을 FIFO로 바꾸는 방식이다. 다만 대기하는 경로를 동시에 많이 저장하므로, 최소 길이가 필요한 문제가 아니라면 DFS 백트래킹이 자연스러운 경우가 많다.
+
+## 6. 연결 요소와 격자 탐색
+
+### 6-1. 무방향 연결 요소 세기
+
+```js
+function countComponentsBfs(graph) {
+  const visited = new Uint8Array(graph.length);
+  let count = 0;
+
+  for (let start = 0; start < graph.length; start++) {
+    if (visited[start]) continue;
+    count++;
+    visited[start] = 1;
+    const queue = [start];
+    let head = 0;
+
+    while (head < queue.length) {
+      const v = queue[head++];
+      for (const next of graph[v]) {
+        if (visited[next]) continue;
+        visited[next] = 1;
+        queue.push(next);
+      }
+    }
+  }
+  return count;
+}
+
+console.log(countComponentsBfs([[1], [0], [3], [2], []])); // 3
+console.log(countComponentsBfs([])); // 0
+```
+
+DFS와 마찬가지로 방문 배열은 연결 요소 사이에서도 공유한다. 전체 시간은 `O(V + E)`다. 방향 그래프의 강한 연결 요소를 이 방식의 시작 횟수로 구할 수는 없다.
+
+### 6-2. 격자의 섬 개수: 입력 변경 또는 방문 배열
+
+```js
+function countIslands(grid, mutate = false) {
+  if (grid.length === 0 || grid[0].length === 0) return 0;
+  const rows = grid.length;
+  const cols = grid[0].length;
+  const visited = mutate ? null : new Uint8Array(rows * cols);
+  const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+  function take(r, c) {
+    if (grid[r][c] !== 1) return false;
+    const id = r * cols + c;
+    if (mutate) grid[r][c] = 0;
+    else {
+      if (visited[id]) return false;
+      visited[id] = 1;
+    }
+    return true;
+  }
+
+  let count = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (!take(r, c)) continue;
+      count++;
+      const queue = [r * cols + c];
+      let head = 0;
+      while (head < queue.length) {
+        const id = queue[head++];
+        const row = Math.floor(id / cols);
+        const col = id % cols;
+        for (const [dr, dc] of directions) {
+          const nr = row + dr;
+          const nc = col + dc;
+          if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+          if (take(nr, nc)) queue.push(nr * cols + nc);
+        }
+      }
+    }
+  }
+  return count;
+}
+
+const grid = [[1, 1, 0], [0, 1, 0], [1, 0, 1]];
+console.log(countIslands(grid)); // 3: 원본 보존
+console.log(countIslands(grid, true)); // 3: 방문한 땅을 0으로 변경
+console.log(grid); // [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+```
+
+직사각형이고 값이 숫자 `0`, `1`인 격자를 가정한다. 별도 방문 배열은 원본을 보존하고, 입력 변경 방식은 방문 배열을 생략한다. 후자도 큐가 필요하므로 보조 공간 전체가 `O(1)`은 아니다. 두 방식 모두 시간 `O(RC)`, 최악 보조 공간 `O(RC)`다.
+
+큐에 `[r, c]`를 넣어도 되고, 위처럼 `r * cols + c`로 평탄화해 넣어도 된다. 후자는 좌표용 배열 객체를 매번 만들지 않는 대신 나눗셈·나머지 연산으로 좌표를 복원한다.
+
+## 7. 다중 시작점 BFS: 모든 출발점을 거리 0으로 넣는다
+
+여러 감염원에서 동시에 퍼지는 시간, 여러 시설 중 가장 가까운 시설까지의 거리처럼 **어느 시작점에서 출발하든 가장 짧은 거리**를 구할 때 사용한다.
+
+```js
+function multiSourceDistances(graph, sources) {
+  const dist = Array(graph.length).fill(-1);
+  const queue = [];
+  let head = 0;
+
+  for (const source of sources) {
+    if (dist[source] === 0) continue; // 중복 시작점 제거
+    dist[source] = 0;
+    queue.push(source);
+  }
+
+  while (head < queue.length) {
+    const v = queue[head++];
+    for (const next of graph[v]) {
+      if (dist[next] !== -1) continue;
+      dist[next] = dist[v] + 1;
+      queue.push(next);
+    }
+  }
+  return dist;
+}
+
+console.log(multiSourceDistances([[1], [0, 2], [1, 3], [2]], [0, 3]));
+// [0, 1, 1, 0]
+console.log(multiSourceDistances([[1], []], [])); // [-1, -1]
+```
+
+시작점마다 BFS를 따로 실행하고 최솟값을 취할 수도 있지만, 시작점 수가 `K`면 최악 `O(K(V + E))`다. 동시에 넣으면 시간 `O(V + E + K)`, 공간 `O(V)`다. 반대로 **각 시작점별 거리표가 전부 필요한 문제**라면 다중 시작점 BFS의 거리 하나로 대체할 수 없다.
+
+개념적으로는 가상의 시작점에서 각 시작점까지 비용 0으로 연결한 것과 같다. 일반 BFS에 비용 1의 가상 간선을 추가하면 거리가 1만큼 밀리므로, 실제 구현에서는 시작점들을 바로 거리 0으로 초기화한다.
+
+방향 그래프에서 “각 정점에서 특정 목표까지”의 거리는 간선을 뒤집은 그래프에서 목표를 시작점으로 BFS하여 구할 수 있다. 목표가 여러 개면 뒤집은 그래프의 다중 시작점 BFS로 가장 가까운 목표까지의 거리를 계산한다.
+
+## 8. 상태 확장: 같은 좌표라도 같은 상태가 아닐 수 있다
+
+벽을 최대 한 번 부술 수 있는 격자에서는 `(행, 열)`만 방문 표시하면 안 된다. 같은 칸에 도착해도 이미 벽을 부순 경로와 아직 기회가 남은 경로의 다음 선택이 다르다.
+
+```js
+function shortestWithOneBreak(grid) {
+  if (grid.length === 0 || grid[0].length === 0) return -1;
+  const rows = grid.length;
+  const cols = grid[0].length;
+  // 시작과 목표는 빈 칸이어야 한다. 거리는 방문 칸 수가 아닌 이동 횟수다.
+  if (grid[0][0] !== 0 || grid[rows - 1][cols - 1] !== 0) return -1;
+
+  const dist = Array(rows * cols * 2).fill(-1);
+  const encode = (r, c, used) => (r * cols + c) * 2 + used;
+  const queue = [[0, 0, 0]];
+  const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  let head = 0;
+  dist[encode(0, 0, 0)] = 0;
+
+  while (head < queue.length) {
+    const [r, c, used] = queue[head++];
+    const distance = dist[encode(r, c, used)];
+    if (r === rows - 1 && c === cols - 1) return distance;
+
+    for (const [dr, dc] of directions) {
+      const nr = r + dr;
+      const nc = c + dc;
+      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+      const nextUsed = used + grid[nr][nc];
+      if (nextUsed > 1) continue;
+      const id = encode(nr, nc, nextUsed);
+      if (dist[id] !== -1) continue;
+      dist[id] = distance + 1;
+      queue.push([nr, nc, nextUsed]);
+    }
+  }
+  return -1;
+}
+
+console.log(shortestWithOneBreak([[0, 1, 0], [0, 1, 0]])); // 3
+console.log(shortestWithOneBreak([[0, 1, 1, 0]])); // -1
+console.log(shortestWithOneBreak([[0]])); // 0
+```
+
+숫자 `0`이 빈 칸, `1`이 벽인 직사각형 격자다. 한 칸의 상태를 두 개로 나누므로 시간·공간은 `O(RC × 2)`다. 최대 `K`번 부술 수 있게 확장하면 `used` 범위와 상태 크기를 `K + 1`로 바꾸며 시간·공간은 `O(RC(K + 1))`가 된다.
+
+상태 저장은 3차원 배열 `dist[r][c][used]`, 평탄한 배열, 실제 방문한 상태만 저장하는 Map 중에서 선택할 수 있다. 상태 공간이 작고 밀집되어 있으면 배열이 단순하고, 매우 크지만 일부만 방문한다면 Map을 검토한다. 어느 표현이든 **방문 키에 미래 선택을 결정하는 정보를 포함해야 한다**.
+
+열쇠 문제는 `(위치, 가진 열쇠 집합)`, 낮과 밤 규칙이 있는 문제는 `(위치, 시간의 홀짝)`처럼 확장한다. 거리 증가가 모두 1인 한, 이렇게 확장한 상태 그래프에도 BFS의 최단 거리 성질이 적용된다.
+
+## 9. 0-1 BFS: 처음 발견해도 거리가 확정되지 않는다
+
+간선 비용이 0 또는 1이면 일반 BFS의 “처음 발견하면 방문 완료” 규칙이 깨진다.
+
+```txt
+0 → 1 : 비용 1
+0 → 2 : 비용 0
+2 → 1 : 비용 0
+
+1을 처음 발견한 비용은 1이지만 실제 최단 비용은 0이다.
+```
+
+비용 0인 이동은 현재 거리와 같으므로 덱(deque)의 앞에, 비용 1인 이동은 한 단계 뒤이므로 뒤에 넣는다. 덱은 앞뒤 양쪽에서 삽입·삭제할 수 있는 자료구조다.
+
+```js
+class Deque {
+  constructor() {
+    this.items = new Map();
+    this.front = 0;
+    this.back = 0;
+  }
+
+  get size() {
+    return this.back - this.front;
+  }
+
+  pushFront(value) {
+    this.items.set(--this.front, value);
+  }
+
+  pushBack(value) {
+    this.items.set(this.back++, value);
+  }
+
+  popFront() {
+    if (this.size === 0) return undefined;
+    const value = this.items.get(this.front);
+    this.items.delete(this.front++);
+    return value;
+  }
+}
+
+function zeroOneBfs(graph, start) {
+  // graph[v]의 각 항목은 [다음 정점, 0 또는 1인 비용]
+  const dist = Array(graph.length).fill(Infinity);
+  const deque = new Deque();
+  dist[start] = 0;
+  deque.pushBack([start, 0]);
+
+  while (deque.size > 0) {
+    const [v, snapshot] = deque.popFront();
+    if (snapshot !== dist[v]) continue; // 더 짧은 거리로 갱신된 낡은 항목
+
+    for (const [next, weight] of graph[v]) {
+      const candidate = snapshot + weight;
+      if (candidate >= dist[next]) continue;
+      dist[next] = candidate;
+      const entry = [next, candidate];
+      if (weight === 0) deque.pushFront(entry);
+      else deque.pushBack(entry);
+    }
+  }
+  return dist;
+}
+
+console.log(zeroOneBfs([[[1, 1], [2, 0]], [], [[1, 0]]], 0));
+// [0, 0, 0]
+console.log(zeroOneBfs([[[1, 0]], [[0, 0]], []], 0));
+// [0, 0, Infinity]
+```
+
+방문 배열 대신 **더 작은 거리로 개선되는가**를 판단한다. 거리 개선 때마다 삽입하므로 정점이 중복으로 들어갈 수 있다. 큐 항목의 거리 스냅샷을 저장하면 이미 낡은 후보를 건너뛸 수 있다. 비용 0 사이클에서도 같은 거리로는 다시 넣지 않아 종료한다.
+
+덱에서 유효한 항목을 꺼낼 때는 최소 거리부터 처리된다. 비용 0·1의 제한 덕분에 일반 우선순위 큐 대신 앞·뒤 삽입만으로 이 순서를 유지할 수 있다.
+
+덱 연산을 상수 시간으로 보는 일반적인 분석에서 시간은 `O(V + E)`다. 이 구현의 중복 후보를 포함한 보조 공간 상한은 `O(V + E)`다. 위 Map 덱의 조회·삽입·삭제는 통상 평균 `O(1)`로 분석하며, Map에 관한 언어 차원의 최악 상수 시간 보장을 뜻하지는 않는다. 3-3의 원형 배열을 양방향 삽입으로 확장해도 되고, 최대 삽입 수를 계산해 앞뒤 여유가 있는 고정 배열로 구현할 수도 있다.
+
+이 코드는 **모든 간선 비용이 0 또는 1**이라는 입력 조건이 필요하다. 비용 2 이상을 뒤에 넣기만 한다고 같은 거리 순서가 보장되지는 않는다. 또한 5절의 경로 수 계산을 그대로 결합하면 안 된다. 비용 0 간선은 같은 거리 사이를 연결하고, 비용 0 사이클에서는 같은 최단 비용의 보행이 무한히 많을 수도 있다.
+
+## 10. 거리 외에 BFS·큐를 활용하는 경우
+
+### 10-1. 이분 그래프 판별: 이웃을 반대 색으로 칠하기
+
+```js
+function isBipartite(graph) {
+  const color = Array(graph.length).fill(-1);
+  for (let start = 0; start < graph.length; start++) {
+    if (color[start] !== -1) continue;
+    const queue = [start];
+    let head = 0;
+    color[start] = 0;
+
+    while (head < queue.length) {
+      const v = queue[head++];
+      for (const next of graph[v]) {
+        if (color[next] === -1) {
+          color[next] = 1 - color[v];
+          queue.push(next);
+        } else if (color[next] === color[v]) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+console.log(isBipartite([[1, 3], [0, 2], [1, 3], [0, 2]])); // true
+console.log(isBipartite([[1, 2], [0, 2], [0, 1]])); // false
+```
+
+무방향 그래프를 가정한다. 색은 방문 표시이면서 인접 정점이 다른 집합에 속해야 한다는 제약이다. 이미 방문한 정점이라고 무조건 건너뛰면 색 충돌을 놓친다. DFS로도 같은 규칙을 적용할 수 있다. 시간 `O(V + E)`, 공간 `O(V)`다.
+
+### 10-2. 진입차수 큐로 위상 정렬하기
+
+```js
+function topologicalKahn(graph) {
+  const indegree = Array(graph.length).fill(0);
+  for (const neighbors of graph) {
+    for (const next of neighbors) indegree[next]++;
+  }
+  const queue = [];
+  for (let v = 0; v < graph.length; v++) {
+    if (indegree[v] === 0) queue.push(v);
+  }
+
+  const order = [];
+  let head = 0;
+  while (head < queue.length) {
+    const v = queue[head++];
+    order.push(v);
+    for (const next of graph[v]) {
+      indegree[next]--;
+      if (indegree[next] === 0) queue.push(next);
+    }
+  }
+  return order.length === graph.length ? order : null;
+}
+
+console.log(topologicalKahn([[1, 2], [3], [3], []])); // [0, 1, 2, 3]
+console.log(topologicalKahn([[1], [0]])); // null
+```
+
+Kahn 알고리즘은 큐 기반 위상 정렬로 BFS와 함께 다루지만, 일반 최단 거리 BFS와 큐 삽입 조건이 다르다. 처음 발견하면 넣는 것이 아니라 **모든 선행 간선이 제거되어 진입차수가 0이 될 때** 넣는다. 방문 배열을 덧붙여 처음 본 이웃을 바로 넣으면 잘못된 순서가 된다.
+
+DFS 위상 정렬은 종료 순서를 뒤집고, Kahn은 선행 조건이 해결된 정점을 순서대로 제거한다. 둘 다 시간 `O(V + E)`, 공간 `O(V)`이며 위상 정렬 결과는 여러 개일 수 있다. Kahn에서 정점이 남으면 방향 사이클이 있다는 뜻이다.
+
+## 11. DFS와 BFS, 구현 선택표
+
+| 목적 | 먼저 검토할 방법 | 이유 |
+| --- | --- | --- |
+| 도달 여부·무방향 연결 요소 | DFS 또는 BFS | 전체 방문 표시로 중복 확장 방지 |
+| 같은 비용의 이동에서 최소 횟수 | BFS | 거리 순서로 확장 |
+| 모든 선택·단순 경로 나열 | DFS 백트래킹 | 현재 경로를 수정·복구하기 편함 |
+| 트리 자식 결과 집계 | DFS 후위 처리 | 자식 결과가 완료된 뒤 부모 계산 |
+| 여러 시작점 중 가장 가까운 거리 | 다중 시작점 BFS | 시작점을 모두 거리 0으로 처리 |
+| 가중치 0·1의 최단 비용 | 0-1 BFS | 거리 개선 + 덱 앞뒤 삽입 |
+
+DFS의 활성 호출·프레임 공간은 깊이, BFS의 현재 대기 공간은 너비에 영향을 받는다. 긴 사슬은 DFS의 재귀 깊이가 커지고, 넓게 퍼지는 그래프는 BFS의 큐가 커진다. 다만 head 배열은 소비한 원소도 보관하고 전체 방문 배열도 필요하므로, 실제 공간은 선택한 구현까지 포함해 계산한다.
+
+| BFS에서 구하려는 것 | 저장할 상태 | 재도달 처리 |
+| --- | --- | --- |
+| 도달 여부 | 방문 여부 | 생략 |
+| 최단 거리 | 거리, 미방문 값 | 최초 발견 후 생략 |
+| 최단 경로 하나 | 거리 + 부모 하나 | 최초 부모 유지 |
+| 최단 경로 개수 | 거리 + 경로 수 | 같은 최단 거리면 합산 |
+| 모든 최단 경로 | 거리 + 부모 목록 | 같은 최단 거리면 부모 추가 |
+| 다중 시작점 최단 거리 | 거리, 시작점 모두 0 | 최초 발견 후 생략 |
+| 자원 제한이 있는 최단 거리 | 위치 + 자원 상태별 거리 | 확장 상태 전체로 판단 |
+| 0-1 가중치 최단 거리 | 거리 + 덱 후보 | 더 짧아지면 갱신·재삽입 |
+| 이분 그래프 | 미방문 또는 색 | 색 충돌 검사 |
+| Kahn 위상 정렬 | 남은 진입차수 | 차수가 0이 되면 삽입 |
+
+구현 전에는 **간선 비용이 같은지, 실제 상태가 무엇인지, 재도달했을 때 버릴 정보와 합칠 정보가 무엇인지**를 정한다. BFS의 방문 표시는 단순한 중복 방지 장치가 아니라, 어떤 상태의 최단 거리나 처리 순서가 언제 확정되는지를 표현한다.

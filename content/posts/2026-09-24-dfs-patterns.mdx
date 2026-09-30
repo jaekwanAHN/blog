@@ -1,0 +1,854 @@
+---
+title: "DFS 구현 정리: 도달 가능성, 백트래킹, 후위 순회와 메모이제이션"
+date: "2026-09-24"
+description: "DFS의 방문 표시가 무엇을 뜻하는지에 따라 도달 가능성, 모든 경로 탐색, 사이클 판별의 코드를 구분하고 재귀·명시적 스택·상태 복사 구현을 비교한다."
+tags: ["algorithm", "JavaScript", "DFS", "백트래킹", "그래프"]
+---
+
+DFS(Depth-First Search, 깊이 우선 탐색)는 **한 갈래를 먼저 깊게 탐색하고, 더 진행할 수 없으면 이전 분기점으로 돌아와 다른 갈래를 탐색하는 방법**이다.
+
+함께 읽기: [BFS 구현 정리: 도달 가능성부터 최단 경로와 상태 확장까지](/blog/2026-09-24-bfs-patterns). 두 글은 기본 개념, 목적별 구현, 구현 차이와 복잡도 순서로 구성했다.
+
+그런데 DFS 코드를 보면 어떤 코드는 `visited`를 한 번 표시하고 끝내고, 어떤 코드는 재귀 호출 뒤에 다시 지운다. 둘 중 하나가 틀린 것이 아니다. **같은 정점을 다시 만났을 때, 이미 끝낸 계산인지 새로운 경우의 수인지**가 다르다.
+
+이 글은 특정 문제의 풀이가 아니라 DFS 구현을 고르는 기준을 정리한다. 예제는 JavaScript이며, 정점 번호는 `0`부터 `graph.length - 1`까지이고 모든 인접 정점 번호와 시작·목표 정점이 유효하다고 가정한다. 별도 설명이 없으면 중복 간선이 없는 인접리스트를 사용한다.
+
+문법만 다른 변형까지 무한히 나열할 수는 없으므로, **방문 시점, 상태 소유권, 호출 스택의 표현, 계산 결과의 재사용이 달라지는 구현**을 각각 다룬다.
+
+## 1. DFS의 기본 동작
+
+다음 방향 그래프에서 `0`을 출발점으로 삼아 보자.
+
+```txt
+0 → 1 → 3 → 4
+│       ↑
+└→ 2 ──┘
+
+도달 가능한 정점: 0, 1, 2, 3, 4
+0에서 4로 가는 경로: 0→1→3→4, 0→2→3→4
+```
+
+```js
+const graph = [
+  [1, 2], // 0에서 1, 2로 이동
+  [3],    // 1에서 3으로 이동
+  [3],    // 2에서 3으로 이동
+  [4],    // 3에서 4로 이동
+  [],     // 4에서 나가는 간선 없음
+];
+```
+
+인접리스트에 적힌 순서로 재귀 DFS를 수행하면 `0 → 1 → 3 → 4`까지 간 뒤 `0`의 다음 이웃인 `2`를 탐색한다. `2`에서도 `3`을 만난다. 이때 질문에 따라 행동이 달라진다.
+
+- **어디에 도달할 수 있는가?** `3`에서 갈 수 있는 곳은 이미 확인했으므로 건너뛴다.
+- **어떤 경로로 도달하는가?** `0→2→3`은 새로운 경로이므로 다시 탐색한다.
+- **방향 사이클이 있는가?** `3`이 현재 탐색 중인 조상인지, 이미 탐색을 마친 정점인지 구분한다.
+- **목표까지 경로가 몇 개인가?** DAG라면 `3`에서 목표까지의 경로 수를 계산해 재사용할 수 있다.
+
+재귀는 언어의 **호출 스택**, 반복문은 직접 만든 **명시적 스택**으로 돌아갈 위치를 보관한다. DFS와 재귀는 동의어가 아니며, 백트래킹 역시 재귀 문법 자체를 뜻하지 않는다.
+
+## 2. 도달 가능성: 방문 표시를 유지한다
+
+방문 상태의 의미는 “이 정점은 이미 발견했고, 그 뒤의 탐색을 처리했거나 처리할 예정이다”이다. 같은 정점을 여러 경로로 만나도 한 번만 확장하면 된다. 순환이 있어도 무한히 재방문하지 않는다.
+
+### 2-1. 재귀: 들어갈 때 방문 표시
+
+```js
+function reachableRecursive(graph, start) {
+  const visited = new Uint8Array(graph.length);
+  const order = [];
+
+  function dfs(v) {
+    visited[v] = 1;
+    order.push(v);
+
+    for (const next of graph[v]) {
+      if (!visited[next]) dfs(next);
+    }
+  }
+
+  dfs(start);
+  return { visited, order };
+}
+
+console.log(reachableRecursive([[1, 2], [3], [3], [4], []], 0).order);
+// [0, 1, 3, 4, 2]
+```
+
+`dfs(next)`를 호출하기 **전까지 현재 정점의 표시가 끝나 있어야 한다**. 호출이 끝난 뒤 표시하면 `0→1→0` 같은 사이클에서 끝없이 재귀 호출한다. 이 목적에서는 함수가 끝나도 `visited[v]`를 지우지 않는다.
+
+정점 번호가 문자열이라면 `Uint8Array` 대신 `Set`의 `has`, `add`를 사용할 수 있다. 자료구조가 달라져도 방문 상태의 수명은 같다.
+
+### 2-2. 반복문: 스택에 넣을 때 방문 표시
+
+```js
+function reachablePush(graph, start) {
+  const visited = new Uint8Array(graph.length);
+  const stack = [start];
+  const order = [];
+  visited[start] = 1;
+
+  while (stack.length > 0) {
+    const v = stack.pop();
+    order.push(v);
+
+    for (let i = graph[v].length - 1; i >= 0; i--) {
+      const next = graph[v][i];
+      if (visited[next]) continue;
+      visited[next] = 1;
+      stack.push(next);
+    }
+  }
+
+  return { visited, order };
+}
+
+console.log(reachablePush([[1, 2], [3], [3], [4], []], 0).order);
+// [0, 1, 3, 4, 2]
+```
+
+LIFO(마지막에 넣은 것을 먼저 꺼냄)이므로 이웃을 역순으로 넣으면 앞쪽 이웃부터 꺼낸다. 각 정점은 최대 한 번만 스택에 들어간다.
+
+다만 **이웃들을 한꺼번에 방문 예약하므로 재귀 DFS와 항상 같은 탐색 순서·부모 관계를 만드는 것은 아니다**. 예를 들어 `[[1, 2], [2, 3], [], []]`에서는 재귀 순서가 `[0, 1, 2, 3]`이지만 이 구현은 `[0, 1, 3, 2]`다. `2`가 이미 `0`에서 예약되어 `1`의 자식으로 내려가지 않기 때문이다.
+
+도달 가능성에는 문제가 없지만, 엄밀한 DFS 트리나 진입·종료 순서가 필요한 알고리즘에는 아래 프레임 구현을 사용한다.
+
+### 2-3. 반복문: 스택에서 꺼낼 때 방문 표시
+
+```js
+function reachablePop(graph, start) {
+  const visited = new Uint8Array(graph.length);
+  const stack = [start];
+  const order = [];
+
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (visited[v]) continue; // 중복으로 들어온 항목은 버린다.
+    visited[v] = 1;
+    order.push(v);
+
+    for (let i = graph[v].length - 1; i >= 0; i--) {
+      const next = graph[v][i];
+      if (!visited[next]) stack.push(next);
+    }
+  }
+
+  return { visited, order };
+}
+
+console.log(reachablePop([[1, 2], [2, 3], [], []], 0).order);
+// [0, 1, 2, 3]
+```
+
+이 구현은 같은 이웃 순서의 재귀 DFS와 같은 **최초 방문 순서**를 얻는다. 하지만 아직 꺼내지 않은 정점이 여러 번 스택에 들어갈 수 있어 스택 공간이 최악 `O(V + E)`까지 커질 수 있다. 부모를 기록한다면 단순히 push 때 덮어쓰지 말고, 스택에 후보 부모도 담아 최초 방문이 확정될 때 저장해야 한다.
+
+꺼낸 후의 중복 검사를 빼면 이미 확장한 정점의 이웃을 다시 펼치게 된다.
+
+### 2-4. 반복문: 재귀 호출 프레임을 그대로 저장
+
+정점만 넣는 대신 “현재 정점과 다음에 확인할 이웃 위치”를 저장하면 재귀의 중단·재개를 정확히 표현할 수 있다.
+
+```js
+function dfsFrames(graph, start) {
+  const visited = new Uint8Array(graph.length);
+  const enter = [];
+  const exit = [];
+  const stack = [{ v: start, index: 0 }];
+  visited[start] = 1;
+  enter.push(start);
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const { v } = frame;
+
+    if (frame.index === graph[v].length) {
+      exit.push(v); // 모든 자식 탐색이 끝난 시점
+      stack.pop();
+      continue;
+    }
+
+    const next = graph[v][frame.index++];
+    if (visited[next]) continue;
+    visited[next] = 1;
+    enter.push(next);
+    stack.push({ v: next, index: 0 });
+  }
+
+  return { enter, exit };
+}
+
+console.log(dfsFrames([[1, 2], [3], [3], [4], []], 0));
+// enter: [0, 1, 3, 4, 2]
+// exit:  [4, 3, 1, 2, 0]
+```
+
+| 도달 가능성 구현 | 방문 표시 시점 | 스택의 특징 | 재귀와의 관계 |
+| --- | --- | --- | --- |
+| 재귀 | 함수 진입 | 호출 스택에 현재 경로 | 기준이 되는 구현 |
+| 정점 스택, push 표시 | 발견·예약 | 정점당 최대 한 번 저장 | 방문 순서·DFS 트리가 다를 수 있음 |
+| 정점 스택, pop 표시 | 최초로 꺼냄 | 중복 항목 가능 | 역순 push 시 최초 방문 순서 일치 |
+| 프레임 스택 | 새 프레임 진입 | 정점과 이웃 위치 저장 | 진입·종료 시점 모두 재현 |
+
+`V`는 전체 정점 수, `E`는 인접리스트 전체 항목 수로 두면 네 구현 모두 최악 시간 `O(V + E)`다. 방문 배열 초기화도 `O(V)`다. 실제 간선 순회는 시작점에서 도달 가능한 부분에 한정된다. pop 표시 구현을 제외한 보조 공간은 `O(V)`이고, 재귀·프레임의 활성 스택은 탐색 깊이에 비례한다. 인접행렬에서는 방문한 정점마다 이웃 후보 `V`개를 검사하므로 전체 탐색이 `O(V²)`가 될 수 있다.
+
+## 3. 도달 여부, 경로 하나, 연결 요소
+
+### 3-1. 경로 하나를 찾고 끝내기
+
+“어떤 경로든 하나”라면 전체 방문 표시를 유지해도 된다. 부모만 저장하고 목표에서 역으로 따라간다.
+
+```js
+function findOnePath(graph, start, target) {
+  const visited = new Uint8Array(graph.length);
+  const parent = Array(graph.length).fill(-1);
+
+  function dfs(v) {
+    visited[v] = 1;
+    if (v === target) return true;
+
+    for (const next of graph[v]) {
+      if (visited[next]) continue;
+      parent[next] = v;
+      if (dfs(next)) return true; // 성공을 모든 호출자에게 전달
+    }
+    return false;
+  }
+
+  if (!dfs(start)) return null;
+  const path = [];
+  for (let v = target; v !== -1; v = parent[v]) path.push(v);
+  return path.reverse();
+}
+
+console.log(findOnePath([[1, 2], [3], [3], [4], []], 0, 4));
+// [0, 1, 3, 4]
+console.log(findOnePath([[], []], 0, 1)); // null
+console.log(findOnePath([[]], 0, 0)); // [0]
+```
+
+도달 여부만 필요하면 내부의 `dfs(start)` 결과를 반환하면 된다. `dfs(next)`만 호출하고 결과를 무시하면 성공을 위로 전달하지 못한다.
+
+반복문에서는 2-2처럼 **push 시 방문 표시와 부모 저장**을 함께 하고, 목표를 꺼내면 종료한 뒤 같은 방식으로 복원할 수 있다. 이때도 유효한 경로 하나는 얻지만 재귀와 같은 경로라는 보장은 없다.
+
+DFS로 처음 찾은 경로는 **최단 경로가 아니다**. 가중치 없는 그래프의 최단 거리는 BFS, 음이 아닌 가중치의 최단 거리는 다익스트라처럼 목적에 맞는 알고리즘을 고른다.
+
+### 3-2. 무방향 그래프의 연결 요소 세기
+
+한 시작점에서 DFS를 한 번 수행하면 그 정점이 속한 연결 요소만 방문한다. 아직 방문하지 않은 정점마다 탐색을 새로 시작하되, 방문 배열은 전체 탐색 동안 공유한다.
+
+```js
+function countComponents(graph) {
+  const visited = new Uint8Array(graph.length);
+  let count = 0;
+
+  for (let start = 0; start < graph.length; start++) {
+    if (visited[start]) continue;
+    count++;
+    visited[start] = 1;
+    const stack = [start];
+
+    while (stack.length > 0) {
+      const v = stack.pop();
+      for (const next of graph[v]) {
+        if (visited[next]) continue;
+        visited[next] = 1;
+        stack.push(next);
+      }
+    }
+  }
+  return count;
+}
+
+console.log(countComponents([[1], [0], [3], [2], []])); // 3
+console.log(countComponents([])); // 0
+```
+
+재귀 버전은 스택 루프를 2-1의 `dfs`로 바꾸면 된다. 모든 정점과 간선을 합쳐 한 번씩 처리하므로 `O(V + E)`다. 시작점마다 방문 배열을 초기화하면 같은 요소를 다시 센다.
+
+이 코드는 **무방향 그래프용**이다. 방향 그래프의 강한 연결 요소는 서로 왕복할 수 있어야 하며, 위처럼 단순히 DFS 시작 횟수를 세어 구할 수 없다.
+
+격자의 섬 개수도 같은 문제다. 칸을 정점, 상하좌우 이동을 간선으로 생각하면 된다. 별도 방문 배열을 만들거나, 입력 변경이 허용될 때 방문한 땅을 물로 바꿔 표시할 수 있다. 후자는 원본을 바꾸며, 이 경우에도 스택·재귀 공간은 필요하다.
+
+## 4. 모든 단순 경로: 현재 경로의 방문 표시만 유지한다
+
+앞의 예제에서 `0→1→3→4`를 찾은 후에도 `0→2→3→4`를 찾아야 한다. 전역 `visited[3]`을 계속 유지하면 두 번째 경로가 사라진다.
+
+반대로 아무 방문 검사도 하지 않으면 사이클에서 무한히 돈다. 그래서 **현재 경로에서만 정점 중복을 금지하는 `onPath`**가 필요하다. 정점이 반복되지 않는 경로를 단순 경로라고 한다.
+
+사이클이 있는 그래프에서 정점 재방문을 허용한 모든 보행(walk)을 나열하면 무한히 많을 수 있다. 재방문을 허용하려면 최대 이동 횟수 같은 별도 종료 조건이 필요하다.
+
+### 4-1. 공유 상태를 수정하고 원상 복구
+
+```js
+function allPathsRestore(graph, start, target) {
+  const onPath = new Uint8Array(graph.length);
+  const path = [];
+  const result = [];
+
+  function dfs(v) {
+    onPath[v] = 1;
+    path.push(v);
+
+    if (v === target) {
+      result.push([...path]); // 현재 배열 자체가 아니라 스냅샷 저장
+    } else {
+      for (const next of graph[v]) {
+        if (!onPath[next]) dfs(next);
+      }
+    }
+
+    path.pop();
+    onPath[v] = 0; // 형제 분기에서 다시 사용할 수 있게 복구
+  }
+
+  dfs(start);
+  return result;
+}
+
+console.log(allPathsRestore([[1, 2], [3], [3], [4], []], 0, 4));
+// [[0, 1, 3, 4], [0, 2, 3, 4]]
+console.log(allPathsRestore([[1, 2], [0, 2], []], 0, 2));
+// [[0, 1, 2], [0, 2]]
+```
+
+함수 하나의 책임을 **선택 → 탐색 → 복구**로 맞췄다. 목표에 도착해도 아래 복구 코드가 실행되도록 `else`로 분리했다. 중간에 `return`을 추가하면서 복구를 건너뛰지 않도록 주의한다.
+
+`result.push(path)`라고 쓰면 모든 결과가 같은 배열을 가리킨다. 마지막에 `path`가 비워지면 저장한 결과도 비어 보이므로 복사해야 한다.
+
+### 4-2. 분기마다 상태를 복사
+
+```js
+function allPathsCopy(graph, start, target) {
+  const result = [];
+
+  function dfs(v, path, used) {
+    if (v === target) {
+      result.push(path);
+      return;
+    }
+    for (const next of graph[v]) {
+      if (used.has(next)) continue;
+      const nextUsed = new Set(used);
+      nextUsed.add(next);
+      dfs(next, [...path, next], nextUsed);
+    }
+  }
+
+  dfs(start, [start], new Set([start]));
+  return result;
+}
+
+console.log(allPathsCopy([[1, 2], [3], [3], [4], []], 0, 4));
+// [[0, 1, 3, 4], [0, 2, 3, 4]]
+```
+
+각 호출이 독립된 상태를 소유하므로 `pop`, `delete`가 필요 없다. 이 버전의 `path`는 생성 이후 수정하지 않으므로 결과에 다시 복사하지 않고 저장해도 안전하다.
+
+대신 깊이 `d`에서 배열과 Set을 복사하는 데 `O(d)`가 든다. 최대 깊이가 `D`라면 활성 재귀 호출들이 각각 접두 경로를 보유하여, 결과 공간을 제외해도 최악 `O(D²)`의 경로·집합 저장 공간이 필요할 수 있다.
+
+`path.includes(next)`로 Set을 없애는 방법도 있다. 코드와 저장 상태는 줄지만 매번 경로를 선형 탐색한다. Set을 써도 이 예제는 분기마다 Set 전체를 복사하므로 확장 비용이 상수가 되지는 않는다.
+
+### 4-3. 반복문에서도 분기별 상태 복사
+
+```js
+function allPathsStackCopy(graph, start, target) {
+  const result = [];
+  const stack = [{ v: start, path: [start], used: new Set([start]) }];
+
+  while (stack.length > 0) {
+    const { v, path, used } = stack.pop();
+    if (v === target) {
+      result.push(path);
+      continue;
+    }
+    for (let i = graph[v].length - 1; i >= 0; i--) {
+      const next = graph[v][i];
+      if (used.has(next)) continue;
+      const nextUsed = new Set(used);
+      nextUsed.add(next);
+      stack.push({ v: next, path: [...path, next], used: nextUsed });
+    }
+  }
+  return result;
+}
+
+console.log(allPathsStackCopy([[1, 2], [3], [3], [4], []], 0, 4));
+// [[0, 1, 3, 4], [0, 2, 3, 4]]
+```
+
+재귀 깊이 제한을 피할 수 있지만, 대기 중인 형제 분기들의 경로와 집합까지 스택에 저장한다. “반복문이므로 메모리가 적다”는 보장은 없다.
+
+### 4-4. 반복문에서 프레임과 공유 상태 복구
+
+```js
+function allPathsStackRestore(graph, start, target) {
+  const result = [];
+  const path = [start];
+  const onPath = new Uint8Array(graph.length);
+  const stack = [{ v: start, index: 0 }];
+  onPath[start] = 1;
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const { v } = frame;
+
+    if (v === target || frame.index === graph[v].length) {
+      if (v === target) result.push([...path]);
+      stack.pop();
+      path.pop();
+      onPath[v] = 0;
+      continue;
+    }
+
+    const next = graph[v][frame.index++];
+    if (onPath[next]) continue;
+    onPath[next] = 1;
+    path.push(next);
+    stack.push({ v: next, index: 0 });
+  }
+  return result;
+}
+
+console.log(allPathsStackRestore([[1, 2], [3], [3], [4], []], 0, 4));
+// [[0, 1, 3, 4], [0, 2, 3, 4]]
+```
+
+현재 탐색하는 경로 하나만 공유하고, 프레임이 끝날 때 복구한다. 복사 기반 스택에서 `used`를 전역 배열 하나로 바꾸기만 하면 안 된다. 서로 다른 대기 분기가 같은 방문 표시를 공유하기 때문이다.
+
+| 모든 경로 구현 | 분기 상태 | 복구 | 주요 비용 |
+| --- | --- | --- | --- |
+| 재귀 + 공유 상태 | 현재 경로 하나 | 호출 종료 시 | 깊이만큼의 호출 스택 |
+| 재귀 + 복사 | 호출마다 별도 경로·집합 | 불필요 | 분기별 복사, 활성 접두 경로 저장 |
+| 반복문 + 복사 | 대기 분기마다 별도 상태 | 불필요 | 대기 중인 상태들의 총크기 |
+| 반복문 + 프레임 | 현재 경로 하나 | 프레임 종료 시 | 깊이만큼의 프레임 스택 |
+
+네 구현 모두 도달 경로가 없으면 `[]`, 시작과 목표가 같으면 `[[start]]`를 반환한다. 목표에 처음 도착하면 그 경로를 끝낸다. DAG에서는 정점 재방문으로 사이클이 생길 수 없어 `onPath` 검사를 생략할 수 있지만, **서로 다른 경로를 합쳐 버리는 전역 방문 표시를 넣으면 안 된다**.
+
+### 모든 경로의 복잡도는 O(V + E)가 아니다
+
+공유 상태 구현의 시간은 탐색한 모든 경로 접두사에서 검사한 이웃 수의 합과 결과 복사량으로 계산한다. 결과 경로 수가 `P`, 최대 길이가 `D`이면 결과 저장만 최대 `O(PD)`다. 실패한 분기도 탐색하므로 출력 크기만으로 전체 시간을 설명할 수 없다.
+
+DAG에서도 경로 수는 지수적으로 많을 수 있고, 일반 그래프의 단순 경로는 팩토리얼 규모까지 늘 수 있다. 공유 상태 버전의 보조 공간은 결과를 제외하면 `O(V + D)`다. 복사 버전에는 앞서 설명한 복사 시간과 추가 저장 공간이 더해진다.
+
+결과가 필요할 때마다 콜백으로 처리하거나 제너레이터로 내보내면 모든 결과를 보관하지 않을 수 있다. 그래도 모든 경우를 실제로 생성하는 시간은 줄어들지 않는다.
+
+## 5. 순열·조합·부분집합: 정점 대신 선택 상태를 탐색한다
+
+백트래킹의 탐색 대상은 주어진 그래프일 필요가 없다. 지금까지 고른 숫자들을 상태로 보고, 다음 숫자를 고르는 행동을 간선으로 보면 탐색 트리가 만들어진다.
+
+### 5-1. 순열: 사용 표시 또는 제자리 교환
+
+서로 다른 원소의 순열은 현재 경로에서 사용한 **원소 인덱스**를 기록하는 방식으로 구현할 수 있다.
+
+```js
+function permutationsUsed(values) {
+  const used = new Uint8Array(values.length);
+  const path = [];
+  const result = [];
+
+  function dfs() {
+    if (path.length === values.length) {
+      result.push([...path]);
+      return;
+    }
+    for (let i = 0; i < values.length; i++) {
+      if (used[i]) continue;
+      used[i] = 1;
+      path.push(values[i]);
+      dfs();
+      path.pop();
+      used[i] = 0;
+    }
+  }
+
+  dfs();
+  return result;
+}
+
+console.log(permutationsUsed([1, 2])); // [[1, 2], [2, 1]]
+```
+
+배열의 앞부분을 확정하는 방식이라면 별도 방문 배열 없이 **교환 후 복구**할 수도 있다.
+
+```js
+function permutationsSwap(values) {
+  const items = [...values]; // 호출자의 입력은 보존
+  const result = [];
+
+  function dfs(index) {
+    if (index === items.length) {
+      result.push([...items]);
+      return;
+    }
+    for (let i = index; i < items.length; i++) {
+      [items[index], items[i]] = [items[i], items[index]];
+      dfs(index + 1);
+      [items[index], items[i]] = [items[i], items[index]];
+    }
+  }
+
+  dfs(0);
+  return result;
+}
+
+console.log(permutationsSwap([1, 2])); // [[1, 2], [2, 1]]
+```
+
+두 구현은 같은 순열 집합을 만들지만 나열 순서는 달라질 수 있다. 결과 복사를 포함한 시간은 `O(n × n!)`, 결과를 제외한 보조 공간은 `O(n)`이다. 남은 후보 배열을 매번 복사해 전달하는 구현도 가능하며, 상태 복구가 없어지는 대신 복사·할당 비용이 붙는다.
+
+**입력에 중복 값이 있으면 인덱스가 다른 동일 값 때문에 중복 순열이 나온다.** 값 기준의 서로 다른 순열만 원한다면 다음 중 하나를 적용한다.
+
+- 사용 표시 방식: 숫자 배열을 정렬하고, 반복문에서 `i > 0 && values[i] === values[i - 1] && !used[i - 1]`이면 건너뛴다. 같은 깊이에서 동일한 값을 새 출발점으로 고르는 것을 막는다.
+- 교환 방식: `dfs(index)`마다 새 Set을 만들고, 이번 깊이에서 이미 앞자리로 옮겨 본 값이면 교환을 건너뛴다. Set은 호출별로 따로 만들어야 한다.
+
+### 5-2. 조합: 다음 선택의 시작 인덱스로 중복 방지
+
+`[1, 2]`와 `[2, 1]`을 같은 선택으로 취급한다면 순서를 증가시키면 된다. 이미 고른 인덱스보다 뒤에서만 선택하므로 `used`가 필요 없다.
+
+```js
+function combinations(values, k) {
+  const result = [];
+  const path = [];
+  if (k < 0 || k > values.length) return result;
+
+  function dfs(start) {
+    if (path.length === k) {
+      result.push([...path]);
+      return;
+    }
+    const need = k - path.length;
+    // 남은 원소가 need개보다 적어지는 분기는 시작하지 않는다.
+    for (let i = start; i <= values.length - need; i++) {
+      path.push(values[i]);
+      dfs(i + 1);
+      path.pop();
+    }
+  }
+
+  dfs(0);
+  return result;
+}
+
+console.log(combinations([1, 2, 3], 2)); // [[1, 2], [1, 3], [2, 3]]
+console.log(combinations([1, 2], 0)); // [[]]
+```
+
+또 다른 구현은 각 원소마다 **선택 / 미선택** 두 갈래로 나누고 선택 개수가 `k`가 되면 저장하는 것이다. 아래 부분집합의 이진 분기 코드에 개수 조건과 남은 후보 수 가지치기를 적용하면 된다.
+
+반복 선택을 허용하는 중복 조합은 다음 호출을 `dfs(i)`로 바꿀 수 있다. 이때 선택 개수 `k`가 깊이의 종료 조건이다. 입력 자체의 중복 값 때문에 생기는 동일 조합 제거와, 같은 원소를 여러 번 고를 수 있다는 조건은 서로 다르다.
+
+### 5-3. 부분집합: 이진 분기 또는 시작 인덱스
+
+```js
+function subsetsBinary(values) {
+  const result = [];
+  const path = [];
+
+  function dfs(index) {
+    if (index === values.length) {
+      result.push([...path]);
+      return;
+    }
+    dfs(index + 1); // 이번 원소를 선택하지 않음
+    path.push(values[index]);
+    dfs(index + 1); // 이번 원소를 선택함
+    path.pop();
+  }
+
+  dfs(0);
+  return result;
+}
+
+function subsetsStart(values) {
+  const result = [];
+  const path = [];
+
+  function dfs(start) {
+    result.push([...path]); // 모든 접두 선택이 하나의 부분집합
+    for (let i = start; i < values.length; i++) {
+      path.push(values[i]);
+      dfs(i + 1);
+      path.pop();
+    }
+  }
+
+  dfs(0);
+  return result;
+}
+
+console.log(subsetsBinary([1, 2])); // [[], [2], [1], [1, 2]]
+console.log(subsetsStart([1, 2])); // [[], [1], [1, 2], [2]]
+```
+
+둘 다 서로 다른 원소 `n`개의 부분집합 `2^n`개를 만들며, 결과 복사를 포함한 시간·결과 공간은 `O(n × 2^n)`, 보조 공간은 `O(n)`이다. 이진 분기는 리프에서, 시작 인덱스 방식은 모든 상태에서 결과를 기록한다.
+
+조합과 부분집합에서도 값 중복을 없애려면 정렬한 뒤 **같은 깊이**의 중복 후보를 건너뛴다. 시작 인덱스 방식에서는 `i > start && values[i] === values[i - 1]`이 그 조건이다.
+
+순열·조합·부분집합도 4절처럼 상태 복사 또는 프레임 스택으로 옮길 수 있다. 작은 원소 집합의 `used`를 비트마스크 값으로 전달하면 방문 배열의 복구를 없앨 수도 있다. 다만 JavaScript의 Number 비트 연산은 32비트이므로 범위를 확인해야 한다. 여기의 배열 기반 구현은 그 비트 수 제한을 받지 않는다.
+
+### 가지치기는 답이 될 수 없는 분기만 제거한다
+
+백트래킹은 모든 후보를 무조건 리프까지 생성하는 것과 다르다. 위 조합 코드는 남은 원소 수가 부족한 분기를 미리 제외한다. 그래도 유효한 모든 답은 남는다.
+
+합 문제에서 `sum > target`이면 중단하는 가지치기는 앞으로 더할 값이 모두 음이 아닐 때에만 그대로 적용할 수 있다. 음수가 있으면 나중에 합이 다시 줄어들 수 있다. 가지치기 조건은 문제의 제약에서 정당화해야 한다.
+
+## 6. 트리 DFS: 부모만 피하기, 자식 결과 모으기
+
+무방향 **트리**에는 사이클이 없으므로 직전 부모로 돌아가는 간선만 제외해도 된다. 일반 무방향 그래프에서 같은 코드를 쓰면 삼각형 사이클을 계속 돌 수 있다.
+
+### 6-1. 재귀 후위 순회로 서브트리 크기 계산
+
+```js
+function subtreeSizesRecursive(tree, root) {
+  const size = Array(tree.length).fill(0);
+
+  function dfs(v, parent) {
+    size[v] = 1;
+    for (const next of tree[v]) {
+      if (next === parent) continue;
+      dfs(next, v);
+      size[v] += size[next]; // 자식의 계산이 끝난 뒤 합산
+    }
+  }
+
+  dfs(root, -1);
+  return size;
+}
+
+console.log(subtreeSizesRecursive([[1, 2], [0, 3], [0], [1]], 0));
+// [4, 2, 1, 1]
+```
+
+진입 시 실행하는 코드는 전위 처리, 자식의 호출이 끝난 뒤 실행하는 코드는 후위 처리다. 서브트리 합·크기, 트리 DP처럼 **자식 결과가 먼저 필요한 계산**은 후위 처리를 사용한다.
+
+### 6-2. 반복문으로 순서를 모은 뒤 역순 집계
+
+```js
+function subtreeSizesIterative(tree, root) {
+  const parent = Array(tree.length).fill(-1);
+  const order = [];
+  const stack = [root];
+
+  while (stack.length > 0) {
+    const v = stack.pop();
+    order.push(v);
+    for (const next of tree[v]) {
+      if (next === parent[v]) continue;
+      parent[next] = v;
+      stack.push(next);
+    }
+  }
+
+  const size = Array(tree.length).fill(1);
+  for (let i = order.length - 1; i >= 0; i--) {
+    const v = order[i];
+    if (parent[v] !== -1) size[parent[v]] += size[v];
+  }
+  return size;
+}
+
+console.log(subtreeSizesIterative([[1, 2], [0, 3], [0], [1]], 0));
+// [4, 2, 1, 1]
+```
+
+루트가 유효한 연결 트리를 가정한다. 부모를 자식보다 먼저 기록한 순서를 뒤집으면 자식이 부모보다 먼저 계산된다. 재귀의 정확한 형제 처리 순서를 복원할 필요 없이 자식 결과를 합칠 때 적합하다. 시간·공간은 모두 `O(V)`다.
+
+후위 처리를 반복문으로 표현하는 방법은 세 가지다.
+
+- **순서 저장 후 역순 처리**: 위처럼 합산·최댓값 등 자식 결과만 필요할 때 간단하다.
+- **프레임 스택**: 2-4의 `exit` 시점에서 집계하면 재귀의 종료 순서를 그대로 따른다.
+- **진입/종료 이벤트 스택**: 진입 항목을 꺼낼 때 자신의 종료 항목을 먼저 넣고, 그 위에 자식 진입 항목을 넣는다. LIFO이므로 모든 자식 처리 후 자신의 종료 항목을 꺼낸다. 방문 판단은 진입 시 수행한다.
+
+## 7. 방향 사이클 판별과 위상 정렬: 세 가지 상태
+
+방향 그래프에서 “이미 방문한 정점으로 가는 간선”이 있다는 것만으로 사이클은 아니다. 처음 예제의 `2→3`은 이미 탐색이 끝난 정점으로 합류하는 간선일 뿐이다.
+
+현재 호출 경로의 조상으로 돌아가는 간선인지 알아야 한다.
+
+| 색 상태 | 의미 | 해당 정점으로 향하는 간선을 만나면 |
+| --- | --- | --- |
+| `0` | 미방문 | 새로 탐색 |
+| `1` | 진입했지만 아직 종료하지 않음 | 현재 경로로 돌아가므로 사이클 |
+| `2` | 모든 이웃 탐색 완료 | 건너뛰어도 됨 |
+
+### 7-1. 재귀: 종료할 때 결과에 넣기
+
+```js
+function topologicalRecursive(graph) {
+  const color = new Uint8Array(graph.length);
+  const order = [];
+
+  function dfs(v) {
+    color[v] = 1;
+    for (const next of graph[v]) {
+      if (color[next] === 1) return false;
+      if (color[next] === 0 && !dfs(next)) return false;
+    }
+    color[v] = 2;
+    order.push(v);
+    return true;
+  }
+
+  for (let v = 0; v < graph.length; v++) {
+    if (color[v] === 0 && !dfs(v)) return null;
+  }
+  return order.reverse();
+}
+
+console.log(topologicalRecursive([[1, 2], [3], [3], []]));
+// [0, 2, 1, 3]
+console.log(topologicalRecursive([[1], [0]])); // null: 사이클
+```
+
+DAG(방향 비순환 그래프)라면 종료 순서의 역순이 위상 정렬이다. 모든 간선 `v→next`에서 `v`가 `next`보다 앞선다. 연결되지 않은 부분도 확인하도록 바깥 반복문을 둔다.
+
+`visited`와 `inStack` 두 배열로 표현할 수도 있다. 진입 시 둘 다 표시하고, 종료 시 `inStack`만 지운다. `visited=true, inStack=false`가 색 `2`에 해당한다.
+
+백트래킹은 종료 시 상태를 `0`으로 돌려 다른 경로를 탐색하지만, 이 알고리즘은 `2`로 바꿔 계산 완료를 유지한다. 사이클 발견 시에는 전체 탐색을 바로 중단하므로 남아 있는 활성 표시를 복구할 필요가 없다. 실패 이후 같은 상태 배열로 탐색을 재개하는 용도의 코드는 아니다.
+
+### 7-2. 반복문: 프레임으로 종료 시점 보존
+
+```js
+function topologicalIterative(graph) {
+  const color = new Uint8Array(graph.length);
+  const order = [];
+
+  for (let start = 0; start < graph.length; start++) {
+    if (color[start] !== 0) continue;
+    color[start] = 1;
+    const stack = [{ v: start, index: 0 }];
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      const { v } = frame;
+      if (frame.index === graph[v].length) {
+        color[v] = 2;
+        order.push(v);
+        stack.pop();
+        continue;
+      }
+      const next = graph[v][frame.index++];
+      if (color[next] === 1) return null;
+      if (color[next] === 2) continue;
+      color[next] = 1;
+      stack.push({ v: next, index: 0 });
+    }
+  }
+  return order.reverse();
+}
+
+console.log(topologicalIterative([[1, 2], [3], [3], []]));
+// [0, 2, 1, 3]
+console.log(topologicalIterative([[0]])); // null: 자기 루프
+```
+
+두 구현 모두 시간 `O(V + E)`, 보조 공간 `O(V)`다. 진입/종료 이벤트로도 표현할 수 있지만, 한꺼번에 예약한 모든 형제 정점을 “현재 경로”로 표시해서는 안 된다. 프레임 방식은 활성 경로와 스택이 일치해 이 혼동을 줄인다.
+
+무방향 그래프의 사이클 검사는 다르다. 양방향으로 저장된 부모 간선을 제외하고 이미 방문한 이웃을 만나면 사이클이다. 평행 간선을 허용하는 다중 그래프라면 부모 **정점**만 건너뛰면 두 정점 사이의 두 간선으로 생기는 사이클을 놓친다. 간선 ID를 저장해 들어온 간선 하나만 제외해야 한다.
+
+## 8. DFS + 메모이제이션: 모든 경로를 나열하지 않고 개수만 계산
+
+DAG에서 목표까지의 경로 수를 구한다면 같은 정점 이후의 계산을 재사용할 수 있다.
+
+```txt
+ways(v) = v에서 목표까지 가는 경로 수
+ways(target) = 1
+ways(v) = 각 이웃 next에 대한 ways(next)의 합
+```
+
+### 8-1. 재귀 + 메모이제이션
+
+```js
+function countPathsMemo(graph, start, target) {
+  // 입력은 DAG라고 가정한다.
+  const memo = Array(graph.length).fill(undefined);
+
+  function dfs(v) {
+    if (v === target) return 1n;
+    if (memo[v] !== undefined) return memo[v];
+
+    let count = 0n;
+    for (const next of graph[v]) count += dfs(next);
+    memo[v] = count;
+    return count;
+  }
+
+  return dfs(start);
+}
+
+console.log(String(countPathsMemo([[1, 2], [3], [3], [4], []], 0, 4)));
+// "2"
+console.log(String(countPathsMemo([[], []], 0, 1))); // "0"
+```
+
+메모는 방문 여부가 아니라 **완성된 계산 결과**다. 경로 수 `0n`도 유효한 캐시이므로 `if (memo[v])`로 검사하면 안 된다. 경로 수가 커질 수 있어 BigInt를 사용했다.
+
+상태·간선 처리 횟수는 `O(V + E)`다. 다만 BigInt 덧셈 비용은 수의 비트 길이에 따라 늘어나므로 엄밀한 비트 연산 시간까지 항상 `O(V + E)`인 것은 아니다.
+
+### 8-2. 반복문 + 역위상 순서 DP
+
+7-2의 `topologicalIterative`를 함께 사용한다. DFS로 의존 순서를 구한 뒤 그 역순으로 같은 점화식을 계산한다.
+
+```js
+function countPathsTopo(graph, start, target) {
+  const order = topologicalIterative(graph);
+  if (order === null) throw new Error("DAG가 필요합니다.");
+
+  const ways = Array(graph.length).fill(0n);
+  ways[target] = 1n;
+  for (let i = order.length - 1; i >= 0; i--) {
+    const v = order[i];
+    if (v === target) continue;
+    for (const next of graph[v]) ways[v] += ways[next];
+  }
+  return ways[start];
+}
+
+console.log(String(countPathsTopo([[1, 2], [3], [3], [4], []], 0, 4)));
+// "2"
+```
+
+메모 재귀는 시작점에서 필요한 상태만 계산하고, 이 반복문 버전은 그래프 전체의 위상 순서를 구해 계산한다. 두 방식 모두 목표에 도착하면 경로를 종료하며, 목표의 바깥 간선은 경로 수에 더하지 않는다.
+
+### 일반 그래프의 단순 경로에는 정점만 메모하면 안 된다
+
+사이클이 있는 그래프에서 단순 경로를 세면, 같은 `v`라도 이미 사용한 정점에 따라 다음 선택이 달라진다. 따라서 `memo[v]`로 합칠 수 없다. 상태는 필요에 따라 `(현재 정점, 사용한 정점 집합)`이 되어야 하며, 상태 수가 지수적으로 증가할 수 있다.
+
+비슷하게 벽을 한 번 부술 수 있는 격자에서는 `(행, 열)`만으로 부족하다. `(행, 열, 벽을 부순 횟수)`가 실제 상태다. 도달 여부 문제인데도 답이 틀린다면 방문을 복구하기 전에 **방문 키가 필요한 정보를 모두 담았는지**부터 확인한다.
+
+## 9. DFS와 BFS를 고르는 기준
+
+DFS는 한 경로를 깊게 탐색하고, BFS는 시작점에서 간선 수가 가까운 상태부터 탐색한다. 둘 다 도달 가능성과 무방향 연결 요소를 구할 수 있다. 차이는 문제에서 어떤 순서와 정보를 요구하는지에 있다.
+
+| 목적 | 먼저 검토할 방법 | 이유 |
+| --- | --- | --- |
+| 도달 여부·연결 요소 | DFS 또는 BFS | 정점마다 한 번 확장하면 충분 |
+| 같은 비용의 이동에서 최소 횟수 | BFS | 거리 순서로 탐색하여 최초 발견 거리가 최단 거리 |
+| 모든 선택·단순 경로 나열 | DFS 백트래킹 | 현재 경로 하나를 수정·복구하기 편함 |
+| 자식 결과 집계·종료 순서 활용 | DFS 후위 처리 | 자식 탐색을 마친 시점을 활용 |
+| 여러 출발점에서 가장 가까운 거리 | 다중 시작점 BFS | 모든 시작점을 거리 0으로 함께 확장 |
+
+둘 다 인접리스트의 일반적인 전체 순회는 시간 `O(V + E)`, 보조 공간은 최악 `O(V)`다. DFS의 활성 호출·프레임은 깊이, BFS의 대기 큐는 너비에 영향을 받는다. 방문 배열과 구현에 따른 추가 저장 공간까지 포함하면 어느 쪽이 항상 메모리를 덜 쓴다고 단정할 수 없다. 모든 경로를 나열하는 탐색은 별도로 경우의 수를 계산해야 한다.
+
+## 10. 구현 선택표
+
+| 질문 | 기억할 상태 | 탐색이 끝난 뒤 | 적합한 구현 |
+| --- | --- | --- | --- |
+| 도달 가능한가? | 전체 방문 여부 | 유지 | 재귀, 정점 스택 |
+| 경로 하나가 필요한가? | 전체 방문 + 부모 | 유지, 성공 시 종료 | 재귀, push 표시 스택 |
+| 무방향 연결 요소는 몇 개인가? | 전체 방문 여부 | 시작점 사이에서도 유지 | 미방문 정점마다 DFS |
+| 모든 단순 경로가 필요한가? | 현재 경로의 사용 여부 | 복구 또는 분기별 상태 폐기 | 재귀/프레임 백트래킹, 상태 복사 |
+| 순열인가? | 사용 인덱스 또는 확정한 접두 구간 | 사용 표시·교환 복구 | 선택 상태 DFS |
+| 조합·부분집합인가? | 다음 인덱스, 선택 개수 | 경로만 복구 | 시작 인덱스, 선택/미선택 분기 |
+| 자식 결과를 합쳐야 하는가? | 부모 관계 + 계산 결과 | 결과 유지 | 후위 재귀, 프레임, 역순 집계 |
+| 방향 사이클이 있는가? | 미방문/활성/완료 | 활성 → 완료 | 3색 재귀·프레임 |
+| DAG 경로 수만 필요한가? | 상태별 계산 결과 | 메모 유지 | 메모 DFS, 위상 순서 DP |
+
+구현 전에 다음 네 가지를 먼저 정한다.
+
+1. **상태 하나는 무엇인가?** 정점인지, 정점과 남은 자원인지, 선택한 원소 집합까지 포함하는지 정한다.
+2. **같은 상태를 다시 만나면 생략해도 되는가?** 도달 여부와 계산 결과는 재사용할 수 있지만, 서로 다른 경로를 출력해야 한다면 합칠 수 없다.
+3. **언제 작업해야 하는가?** 진입 시 기록할지, 자식 계산 후 합칠지에 따라 스택에 저장할 정보가 달라진다.
+4. **상태를 누가 소유하는가?** 공유하면 복구하고, 복사하면 복사 비용을 계산한다.
+
+JavaScript에서 긴 사슬 모양 그래프의 재귀 깊이는 `V`까지 커질 수 있다. 호출 스택의 안전한 깊이는 실행 환경에 따라 다르므로 큰 깊이가 가능한 입력은 명시적 스택을 검토한다. 스택으로 옮길 때는 정점 번호만 저장해도 되는지, 종료 시점과 복구 위치까지 저장해야 하는지 함께 확인한다.
