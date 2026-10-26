@@ -1,5 +1,8 @@
 // app/page.tsx
 import { PostsPage } from "@/components/posts-page";
+import { pageMetadata, SITE_DESCRIPTION } from "@/lib/seo";
+
+export const metadata = pageMetadata("React·Next.js 문제 해결과 JavaScript 알고리즘", SITE_DESCRIPTION, "/");
 
 // searchParams를 읽지 않으므로 이 페이지는 빌드 시점에 정적으로 생성된다.
 // 2페이지부터는 app/page/[n]/page.tsx가 담당한다.

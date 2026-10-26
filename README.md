@@ -246,3 +246,47 @@ CSS 상에서 `@plugin` 지시어로 플러그인을 등록합니다.
 
 개인 학습 및 블로그 용도로 제작되었습니다.  
 필요하다면 이 구조를 참고해 자유롭게 커스터마이징해 사용하셔도 좋습니다.
+
+## SEO와 검색 노출 확인
+
+운영 기준 URL은 `lib/seo.ts`의 `SITE_URL`입니다. 도메인을 바꾸면 이 값과
+`scripts/check-seo.py`의 기대 도메인을 함께 수정합니다. 각 글·태그·목록은
+자기 URL을 canonical로 제공하고 `/sitemap.xml`, `/robots.txt`를 자동 생성합니다.
+
+글 frontmatter의 선택 필드:
+
+- `updatedAt: "2026-10-26"`: 실제 내용을 수정한 날. 빌드 날짜로 자동 갱신하지 않습니다.
+- `draft: true`: 목록·태그·사이트맵에서 제외하며 직접 URL도 404입니다.
+- `noindex: true`: 읽을 수 있지만 검색 색인과 사이트맵에서 제외합니다.
+
+새 글은 title, description, date를 채워야 빌드됩니다. 날짜는 ISO 날짜 또는
+초 단위 ISO 일시이며, 시간대 없는 일시는 한국 표준시로 처리합니다.
+공개 글은 BlogPosting 구조화 데이터와 공통 태그 기반 관련 글 링크를 제공합니다.
+
+검증:
+
+```bash
+pnpm lint
+pnpm build
+pnpm start
+# 다른 터미널: Python 3 표준 라이브러리만 사용
+python3 scripts/check-seo.py
+# 배포 후 같은 검사 (작업 중인 콘텐츠와 배포 콘텐츠가 일치해야 함)
+python3 scripts/check-seo.py https://ajkblog.vercel.app
+```
+
+GitHub Actions도 프로덕션 서버를 띄워 전체 사이트맵 URL, 글 목록 일치,
+canonical, 언어, 설명, H1, 구조화 데이터, noindex 정책 및 404를 확인합니다.
+이 검사는 Lighthouse 점수나 Google의 실제 색인 상태를 대신하지 않습니다.
+
+Search Console에서 `https://ajkblog.vercel.app/` URL-prefix 속성을 등록한 뒤,
+현재 소유자의 HTML 인증값은 `app/layout.tsx`에 반영되어 있습니다. 이 값은
+공개 HTML에 표시되는 소유권 확인값입니다. 다른 인증값을 사용하려면 배포 환경변수
+`GOOGLE_SITE_VERIFICATION`으로 덮어쓰고 재배포합니다. 운영 홈의 인증 태그를 확인한 뒤
+Search Console에서 확인 버튼을 누르고 `/sitemap.xml`을 제출합니다. 실제 노출은 최신 확정 날짜를
+기준으로 최근 28일과 직전 28일의 페이지별 노출·클릭·CTR·평균 순위를 비교합니다.
+신규 글과 미측정 글은 0회 노출로 처리하지 않습니다.
+
+2026-10-26 조사 당시 최신 SEO 글은 PR #24가 미병합이어서 운영에서 404였습니다.
+이후 PR #24는 main에 병합되었으며 이 브랜치에도 포함되어 있습니다.
+배포 후 전체 URL 검사를 통과한 다음 색인 확인을 진행합니다. 상세 계획: [이슈 #25](https://github.com/jaekwanAHN/blog/issues/25).

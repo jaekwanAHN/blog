@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Footer } from "@/components/footer";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { AUTHOR, SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/seo";
 
 // 첫 페인트 전에 테마 클래스를 붙여, 새로고침 때 반대 테마가 번쩍이는 것을 막는다.
 // 저장된 선택이 없으면 OS 설정을 따른다. 키는 components/theme-toggle.tsx와 공유한다.
@@ -30,8 +31,15 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "기술 블로그",
-  description: "개인 기술 블로그",
+  metadataBase: new URL(SITE_URL),
+  title: { default: SITE_NAME, template: `%s | ${SITE_NAME}` },
+  description: SITE_DESCRIPTION,
+  authors: [AUTHOR],
+  verification: {
+    google:
+      process.env.GOOGLE_SITE_VERIFICATION ||
+      "G84VBqZroaK-pyJBjTeg27qv6ARmZmFTZYmPHdS10wc",
+  },
 };
 
 export default function RootLayout({
@@ -41,7 +49,7 @@ export default function RootLayout({
 }>) {
   return (
     // 인라인 스크립트가 서버 렌더 결과에 없던 class를 붙이므로 경고를 끈다.
-    <html lang="en" suppressHydrationWarning>
+    <html lang="ko" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>

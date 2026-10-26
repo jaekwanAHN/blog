@@ -1,6 +1,7 @@
 ---
-title: "서버는 219ms에 답했는데 태스크는 3.2초 뒤에 떴다"
+title: "Next.js 첫 화면 지연 분석: 서버 응답 이후 JavaScript 실행과 데이터 요청"
 date: "2026-08-26"
+updatedAt: "2026-10-26"
 description: "배포된 앱의 첫 접근을 모바일 조건으로 재현해 '문서 요청 → 실제 태스크 표시' 3,191ms를 구간별로 쪼갠 기록 — 병목은 서버도 DB도 아니고, JS를 다 받아 실행할 때까지 데이터를 요청조차 못 하는 구조였다"
 tags: ["performance", "nextjs", "vercel", "lighthouse", "supabase"]
 ---

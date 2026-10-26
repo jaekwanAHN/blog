@@ -1,5 +1,6 @@
 ---
 title: "OAuth 로그인 버튼이 뒤로가기 후 동작하지 않는 문제"
+updatedAt: "2026-10-26"
 date: "2026-06-05"
 description: "OAuth 로그인 버튼이 뒤로가기 후 동작하지 않는 문제"
 tags: ["dev", "HRM", "EventHandler"]
@@ -7,7 +8,6 @@ tags: ["dev", "HRM", "EventHandler"]
 
 경험을 토대로 AI를 활용하여 작성한 글 입니다.
 
-# OAuth 로그인 버튼이 뒤로가기 후 동작하지 않는 문제 (dev 모드 한정)
 
 
 > Supabase OAuth 로그인 화면에서 로그인 버튼 → OAuth 페이지 이동 → 뒤로가기로 돌아오면 버튼이 동작하지 않던 문제. 결론부터 말하면 **개발 모드(`next dev`)에서만 재현되는 현상**이었고, 프로덕션에서는 bfcache가 정상 작동하여 아무 문제가 없었다. 즉 실제 사용자 환경의 버그가 아니라 dev 환경 특유의 착시였다.

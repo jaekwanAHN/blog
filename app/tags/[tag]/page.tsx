@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getAllTags, getPostsByTag } from "@/lib/mdx";
 import { PostList } from "@/components/post-list";
+import { pageMetadata } from "@/lib/seo";
 
 interface PageProps {
   params: Promise<{ tag: string }>;
@@ -16,17 +17,16 @@ export function generateStaticParams() {
 export async function generateMetadata({
   params,
 }: PageProps): Promise<Metadata> {
-  const { tag } = await params;
-  const decoded = decodeURIComponent(tag);
-  return {
-    title: `#${decoded}`,
-    description: `'${decoded}' 태그가 달린 글 모음`,
-  };
+  const { tag: encodedTag } = await params;
+  const tag = decodeURIComponent(encodedTag);
+  if (getPostsByTag(tag).length === 0) notFound();
+  return pageMetadata(`${tag} 글 모음`, `${tag} 관련 구현 예제와 문제 해결 기록을 모았습니다.`, `/tags/${encodeURIComponent(tag)}`);
 }
 
 export default async function TagPage({ params }: PageProps) {
-  const { tag } = await params;
-  const decoded = decodeURIComponent(tag);
+  const { tag: encodedTag } = await params;
+  const tag = decodeURIComponent(encodedTag);
+  const decoded = tag;
   const posts = getPostsByTag(decoded);
 
   if (posts.length === 0) {
