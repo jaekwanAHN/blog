@@ -35,7 +35,7 @@ export function PostsPage({ currentPage }: PostsPageProps) {
                 href="/tags"
                 className="text-sm text-zinc-500 underline-offset-4 hover:underline dark:text-zinc-400"
               >
-                전체 보기
+                전체 태그 보기
               </Link>
             </div>
             <ul className="flex flex-wrap gap-2">
