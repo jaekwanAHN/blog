@@ -6,14 +6,21 @@ export const SITE_DESCRIPTION =
   "React, Next.js, Supabase의 오류 해결과 성능 개선, JavaScript 알고리즘 구현을 실제 코드와 측정 결과로 정리합니다.";
 export const AUTHOR = { name: "AhnJaeKwan", url: "https://github.com/jaekwanAHN" };
 
+export function socialImage(path: string) {
+  const imagePath = path.startsWith("/blog/")
+    ? `/social/posts/${path.slice("/blog/".length)}.png`
+    : "/social/index.png";
+  return new URL(imagePath, SITE_URL).href;
+}
+
 export function pageMetadata(title: string, description: string, path: string): Metadata {
   const url = new URL(path, SITE_URL).href;
   return {
     title,
     description,
     alternates: { canonical: url },
-    openGraph: { title, description, url, siteName: SITE_NAME, locale: "ko_KR", type: "website" },
-    twitter: { card: "summary", title, description },
+    openGraph: { title, description, url, siteName: SITE_NAME, locale: "ko_KR", type: "website", images: [{ url: socialImage(path), width: 1200, height: 630, alt: path.startsWith("/blog/") ? title : SITE_NAME }] },
+    twitter: { card: "summary_large_image", title, description, images: [{ url: socialImage(path), alt: path.startsWith("/blog/") ? title : SITE_NAME }] },
   };
 }
 
