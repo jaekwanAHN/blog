@@ -286,7 +286,3 @@ Search Console에서 `https://ajkblog.vercel.app/` URL-prefix 속성을 등록�
 Search Console에서 확인 버튼을 누르고 `/sitemap.xml`을 제출합니다. 실제 노출은 최신 확정 날짜를
 기준으로 최근 28일과 직전 28일의 페이지별 노출·클릭·CTR·평균 순위를 비교합니다.
 신규 글과 미측정 글은 0회 노출로 처리하지 않습니다.
-
-2026-10-26 조사 당시 최신 SEO 글은 PR #24가 미병합이어서 운영에서 404였습니다.
-이후 PR #24는 main에 병합되었으며 이 브랜치에도 포함되어 있습니다.
-배포 후 전체 URL 검사를 통과한 다음 색인 확인을 진행합니다. 상세 계획: [이슈 #25](https://github.com/jaekwanAHN/blog/issues/25).
