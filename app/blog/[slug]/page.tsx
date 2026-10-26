@@ -14,7 +14,7 @@ import { mdxComponents } from "@/components/mdx-components";
 import { TagLink } from "@/components/tag-link";
 import Link from "next/link";
 import { PostList } from "@/components/post-list";
-import { articleDate, AUTHOR, pageMetadata, SITE_URL } from "@/lib/seo";
+import { articleDate, AUTHOR, pageMetadata, SITE_URL, socialImage } from "@/lib/seo";
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -66,6 +66,7 @@ export default async function BlogPostPage({ params }: PageProps) {
     description: frontmatter.description,
     url,
     mainEntityOfPage: url,
+    image: [socialImage(`/blog/${slug}`)],
     inLanguage: "ko-KR",
     datePublished: articleDate(frontmatter.date),
     dateModified: frontmatter.updatedAt ? articleDate(frontmatter.updatedAt) : undefined,

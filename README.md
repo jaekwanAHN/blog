@@ -263,6 +263,12 @@ CSS 상에서 `@plugin` 지시어로 플러그인을 등록합니다.
 초 단위 ISO 일시이며, 시간대 없는 일시는 한국 표준시로 처리합니다.
 공개 글은 BlogPosting 구조화 데이터와 공통 태그 기반 관련 글 링크를 제공합니다.
 
+`pnpm dev`와 `pnpm build`는 홈과 공개 글의 공유용 PNG 이미지를
+`public/social/`에 자동 생성합니다. 제목·태그를 바꾼 뒤 개발 중인 공유 이미지를
+갱신하려면 `node scripts/generate-social-images.mjs`를 실행합니다.
+생성 파일은 직접 수정하지 않습니다. 디자인은 해당 스크립트에서 변경하며,
+한글 글꼴과 라이선스는 `assets/fonts/`에 있습니다.
+
 검증:
 
 ```bash

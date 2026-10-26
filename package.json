@@ -4,8 +4,8 @@
   "private": true,
   "packageManager": "pnpm@8.15.9",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "node scripts/generate-social-images.mjs && next dev",
+    "build": "node scripts/generate-social-images.mjs && next build",
     "start": "next start",
     "lint": "eslint",
     "new:post": "node scripts/new-post.mjs"

@@ -117,6 +117,12 @@ def check(url):
     assert [value.rstrip('/') for value in page.canonicals] == [url.rstrip('/')], (path, page.canonicals)
     assert page.meta.get('og:url', '').rstrip('/') == url.rstrip('/'), path + ': OG URL'
     assert page.meta.get('twitter:title'), path + ': Twitter title'
+    image = SITE + ('/social/posts/' + path.split('/')[-1] + '.png' if path.startswith('/blog/') else '/social/index.png')
+    assert page.meta.get('og:image') == image, path + ': OG image'
+    assert page.meta.get('og:image:width') == '1200' and page.meta.get('og:image:height') == '630', path + ': OG dimensions'
+    assert page.meta.get('og:image:alt'), path + ': OG image alt'
+    assert page.meta.get('twitter:card') == 'summary_large_image', path + ': Twitter card'
+    assert page.meta.get('twitter:image') == image, path + ': Twitter image'
     assert page.h1 == 1, (path, 'H1', page.h1)
     assert 'noindex' not in page.meta.get('robots', ''), path + ': unexpectedly noindex'
     if '/blog/' in path:
@@ -125,6 +131,7 @@ def check(url):
         assert schema['headline'] == post['title'] and schema['url'] == url, path + ': schema'
         assert schema['datePublished'].startswith(post['date']), path + ': published date'
         assert schema['author']['name'] == 'AhnJaeKwan', path + ': author'
+        assert schema['image'] == [image], path + ': article image'
         assert page.meta['og:type'] == 'article', path + ': article metadata'
         assert '/' in page.links, path + ': navigation'
     return page.title
@@ -144,4 +151,13 @@ for post in posts:
 for path in ['/blog/nonexistent-seo-check', '/page/02', '/page/9999', '/tags/nonexistent-seo-check']:
     assert fetch(path)[0] == 404, path + ': must be 404'
 assert fetch('/page/1')[2] == BASE + '/', '/page/1 redirect'
+# Verify the actual public assets, including readable noindex posts.
+images = ['/social/index.png'] + ['/social/posts/' + p['slug'] + '.png' for p in posts if not p.get('draft')]
+for image in images:
+    with urllib.request.urlopen(BASE + image, timeout=30) as response:
+        assert response.status == 200 and response.headers.get_content_type() == 'image/png', image
+        data = response.read()
+        assert data[:8] == b'\x89PNG\r\n\x1a\n', image + ': PNG signature'
+        assert int.from_bytes(data[16:20], 'big') == 1200 and int.from_bytes(data[20:24], 'big') == 630, image + ': PNG dimensions'
 print(f'PASS: {len(urls)} sitemap URLs, {len(posts)} post policies, metadata/schema, and invalid routes')
+print(f'PASS: {len(images)} social images and OG/Twitter metadata')
