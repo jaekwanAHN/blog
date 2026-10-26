@@ -1,0 +1,181 @@
+---
+title: "면접 답변은 이미 있었는데, 초기 HTML에는 없었다"
+date: "2026-10-09"
+description: "이해면접의 조건부 해설을 HTML details로 바꾸고 46개 정적 페이지를 비교했다. Lighthouse SEO 100점과 콘텐츠 접근성의 차이, JavaScript 없는 동작, HTML 크기 증가를 기록한다."
+tags: ["nextjs", "react", "seo", "ssg", "html", "testing"]
+---
+
+경험을 토대로 AI를 활용하여 작성한 글 입니다.
+
+네트워크 면접 학습 서비스 [이해면접](https://ihae.vercel.app)의 랜딩페이지를 개선했다. 홈에 대표 질문과 답변을 넣고, 관련 개념 학습과 실습으로 연결했다. Lighthouse에서는 SEO 100점이 나왔지만, 일반적인 면접 검색어에서 얼마나 노출되는지는 별개의 문제였다. Search Console의 페이지 색인 보고서도 데이터 처리 중이었다.
+
+이 과정에서 상세 학습 페이지의 면접 답변을 다시 살펴봤다. 답변 콘텐츠는 이미 충분히 구현되어 있었다. 순차 학습 46개와 랜덤 퀴즈 54개 모두 면접 답변이 있고, 순차 학습 중 21개에는 출력 자료, 복구 해설, 꼬리질문도 있었다.
+
+확인이 필요했던 것은 답변의 존재 여부보다 **그 답변이 언제 HTML 요소가 되는가**였다.
+
+## 버튼을 눌러도 서버 요청은 없었다
+
+변경 전 순차 학습은 JSON 데이터를 클라이언트 컴포넌트에서 import하고, 선택한 주제를 학습 화면에 전달했다. 해설을 여는 함수는 간단했다.
+
+```tsx
+const [revealed, setRevealed] = useState(false);
+
+// usePractice가 반환하는 동작
+reveal: () => setRevealed(true)
+```
+
+화면에서는 이 상태에 따라 해설 컴포넌트를 생성했다.
+
+```tsx
+{revealed && (
+  <AnswerGuide
+    question={question}
+    keywordsOnly={practice.keywordsOnly}
+    onToggle={() => practice.setKeywordsOnly(!practice.keywordsOnly)}
+  />
+)}
+```
+
+클릭할 때 API를 호출해 답변을 다시 가져오는 구조가 아니었다. 답변 데이터는 이미 브라우저에서 사용하는 JavaScript에 포함되어 있었다. 클릭은 상태를 바꾸고, React는 그때 해설 DOM을 만들었다.
+
+다음 세 상태는 서로 다르다.
+
+| 상태 | 변경 전 상세 해설 |
+| --- | --- |
+| 답변 데이터가 클라이언트에서 사용 가능함 | 해당 |
+| 답변이 초기 HTML 본문에 있음 | 해당하지 않음 |
+| 답변 요소가 처음부터 있고 화면에서만 접혀 있음 | 해당하지 않음 |
+
+## 정적 페이지와 초기 본문은 다른 확인 항목이었다
+
+상세 페이지에는 이미 `generateStaticParams`가 있었다. `/study/study-01-01` 같은 고유 URL을 빌드할 때 정적으로 생성하고, 주제별 제목·설명·canonical도 제공했다. 핵심 개념 설명 역시 별도의 접이식 영역으로 초기 HTML에 들어 있었다.
+
+하지만 첫 렌더에서 `revealed`가 `false`였으므로 면접 답변을 포함한 전체 해설은 생성되지 않았다. 정적 페이지라고 해서 모든 상태의 콘텐츠를 자동으로 HTML에 넣어주는 것은 아니다.
+
+`"use client"` 자체가 원인은 아니다. Next.js는 첫 페이지 로드용 HTML을 만들 때 클라이언트 컴포넌트도 사전 렌더링한다. 이번에는 그 렌더링 시점의 조건문이 답변을 제외하고 있었다. [Next.js의 서버·클라이언트 컴포넌트 설명](https://nextjs.org/docs/app/getting-started/server-and-client-components)
+
+Google은 페이지에서 사용자처럼 클릭하거나 스크롤하는 동작에 의존하지 말라고 안내한다. 이 구현은 네트워크 지연 로딩은 아니지만, 본문 생성이 클릭에 의존한다는 점에서 같은 주의가 필요했다. 그렇다고 해당 페이지 전체가 색인되지 않았다고 단정할 수는 없다. 제목과 핵심 개념 등 이미 제공하는 본문이 있었고, 실제 색인 상태는 별도로 확인해야 한다. [Google의 지연 로딩 콘텐츠 안내](https://developers.google.com/search/docs/crawling-indexing/javascript/lazy-loading)
+
+## 해설을 미리 렌더링하고 details로 접었다
+
+순차 학습에서는 전체 해설을 항상 렌더링하고, 펼침 상태만 브라우저의 `details` 요소와 React 상태로 관리하도록 바꿨다. 다음은 핵심 부분을 줄인 코드다.
+
+```tsx
+<details
+  open={revealed}
+  onToggle={(event) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.currentTarget.open) practice.reveal();
+    else practice.hide();
+  }}
+>
+  <summary aria-controls="answer-guide">
+    {revealed ? "해설 닫기 ↑" : "아직 모르겠어요. 먼저 배울게요 →"}
+  </summary>
+  {guide}
+</details>
+```
+
+`guide`에는 개념, 예시, 사용법, 면접 답변, 해당 주제의 실습과 꼬리질문, 출처가 들어 있다. 초기 상태에서는 `open` 속성이 없으므로 해설은 접혀 있지만, 내부 HTML은 존재한다. JavaScript를 끈 브라우저에서도 `summary`를 클릭하거나 키보드로 펼칠 수 있다. [MDN의 details 설명](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/details)
+
+React가 활성화된 상태에서는 기존 학습 흐름과 동기화한다.
+
+- 답변을 작성하고 제출하면 해설을 펼친다.
+- 해설을 열고 닫을 때 입력한 답변과 저장한 이해도를 유지한다.
+- 키워드 모드와 이전·다음 주제 이동을 유지한다.
+- 해설 내부의 용어 설명·꼬리질문도 각각 펼칠 수 있다.
+
+중첩된 `details`의 이벤트와 바깥 해설의 이벤트를 구분하기 위해 이벤트 대상도 확인했다. 해설 콘텐츠의 래퍼에는 펼침 상태를 key로 사용해, 해설을 다시 열 때 내부 접이식 영역이 초기화되던 기존 동작을 유지했다.
+
+JavaScript 없이 제공하는 것은 해설 열람이다. 답변 저장, 키워드 전환 등 애플리케이션 기능까지 JavaScript 없이 동작하도록 바꾼 것은 아니다. 스크립트가 없을 때도 펼침 자체는 작동하지만, React가 관리하는 안내 문구는 바뀌지 않는다.
+
+적용 범위는 고유 URL이 있는 **순차 학습 46개 페이지**다. 홈의 대표 답변 6개는 이미 초기 HTML에 있었고, 랜덤 퀴즈는 기존 API와 사용자 상호작용 흐름을 유지했다. 임의로 선택된 퀴즈를 정적 본문으로 고정하는 작업은 포함하지 않았다.
+
+## 전후 46개 HTML 파일을 비교했다
+
+비교는 운영 서버 응답 시간 대신 동일한 로컬 환경의 프로덕션 빌드 산출물로 했다.
+
+- Node.js 24.18.0, Next.js 16.3.8.
+- 전후 모두 `npm run build -- --webpack` 사용.
+- 대상은 `.next/server/app/study/*.html`의 46개 상세 페이지.
+- 변경 전 파일을 별도로 보관하고, 변경 후 파일과 주제 ID별로 비교.
+- HTML 파서로 `blockquote` 본문을 추출해 해당 주제의 `interviewAnswer` 전체와 일치하는지 검사.
+
+환경에서 Turbopack 빌드가 포트 생성 제한에 걸려 비교에는 webpack을 사용했다. 프로젝트의 기본 빌드 명령 자체를 변경하지는 않았다.
+
+스크립트나 데이터 덩어리에 같은 문자열이 들어 있는 것과 실제 본문 요소가 있는 것을 구분하기 위해, 파일 전체에서 문자열만 검색하지 않았다.
+
+| 항목 | 변경 전 | 변경 후 |
+| --- | ---: | ---: |
+| 검사한 상세 페이지 | 46개 | 46개 |
+| 해당 면접 답변이 초기 HTML의 blockquote에 있는 페이지 | 0개 | 46개 |
+| 페이지별 해설 영역 수 | 0개 | 1개 |
+| HTML 크기 중앙값 | 21,873 B | 33,256.5 B |
+| 같은 파일을 gzip으로 압축한 크기 중앙값 | 6,587 B | 10,484.5 B |
+
+페이지 단위로 보면 다음과 같다.
+
+| 주제 URL | 변경 전 HTML | 변경 후 HTML | 변경 전 gzip | 변경 후 gzip |
+| --- | ---: | ---: | ---: | ---: |
+| `/study/study-01-01` | 22,658 B | 30,953 B | 6,715 B | 9,173 B |
+| `/study/study-05-02` | 22,210 B | 34,106 B | 6,630 B | 10,505 B |
+
+gzip 수치는 Python의 `gzip.compress(data, mtime=0)` 기본 압축 수준으로 전체 HTML 파일을 압축한 값이다. Vercel의 실제 전송량이나 Brotli 압축 결과를 측정한 것은 아니다. HTML 파일에는 Next.js가 넣는 스크립트와 직렬화 데이터도 포함되므로, 표의 크기는 순수 답변 텍스트 크기와도 다르다.
+
+두 중앙값의 차이는 원문 약 11.1 KiB, gzip 약 3.8 KiB다. 이는 각 페이지 증가량의 중앙값과는 구분해야 한다.
+
+## JavaScript를 끄고도 검증했다
+
+기존 테스트는 해설을 닫았을 때 `.answer-guide`가 0개인지 확인했다. 이번 요구사항에서는 그 검사가 오히려 잘못된 기대가 된다. 닫힌 상태에서도 요소는 존재하고, 화면에서만 보이지 않아야 한다.
+
+```tsx
+await expect(guide).toHaveCount(1);
+await expect(guide).toBeHidden();
+```
+
+새 테스트는 JavaScript를 비활성화한 브라우저로 46개 URL을 모두 방문했다. 각 페이지에서 다음을 확인했다.
+
+1. HTTP 200 응답과 하나의 해설 영역.
+2. 해당 주제의 면접 답변 전체가 `blockquote`에 존재.
+3. 초기에는 접혀 있고, 키보드 Enter로 펼칠 수 있음.
+4. 꼬리질문이 있는 주제는 답변도 HTML에 있으며 따로 펼칠 수 있음.
+5. 다시 접으면 해설이 화면에서 숨겨짐.
+
+JavaScript를 켠 테스트에서는 답변 제출, 해설 열기·닫기, 학습 기록 유지, 전체 주제 탐색, 키워드 모드, 모바일 넘침, 꼬리질문 초기화를 확인했다. 공용 학습 컴포넌트를 수정했으므로 랜덤 퀴즈와 즐겨찾기, 홈 이동 테스트도 함께 실행했다.
+
+```bash
+npm run build -- --webpack
+npm run test:e2e -- \
+  e2e/study.spec.ts \
+  e2e/practice.spec.ts \
+  e2e/favorites.spec.ts \
+  e2e/network-interview.spec.ts \
+  --workers=2
+```
+
+해당 범위의 브라우저 테스트 **15개가 모두 통과**했다. 빌드 결과에서도 상세 학습 46개는 정적 생성 상태를 유지했다.
+
+## 얻은 것과 늘어난 비용
+
+| 관점 | 차이 |
+| --- | --- |
+| 본문 접근 | 클릭 후 생성되던 해설이 첫 HTML 응답에 포함됨 |
+| JavaScript 의존 | 해설 열람과 접기·펼치기는 브라우저 기본 기능으로 가능 |
+| 서버 통신 | 해설 열기 시 추가 요청은 전후 모두 없음 |
+| 학습 화면 | 기본적으로 답변을 접어두고, 사용자가 원할 때 공개 |
+| 전송·처리 비용 | HTML과 초기 DOM이 늘고, 클라이언트 초기 처리량도 늘 수 있음 |
+| 검색 성과 | 재크롤링 이후 별도 측정 필요 |
+
+이번 변경을 성능 최적화라고 부르기는 어렵다. HTML에 본문을 더 실으므로 전송량은 늘었다. 클라이언트 컴포넌트와 기존 데이터 import를 유지했기 때문에 JavaScript 번들을 줄였다고 주장할 수도 없다. LCP, INP, hydration 비용은 이번 비교에서 측정하지 않았다.
+
+대신 사용자와 검색엔진이 상세 답변을 얻기 위해 클릭에 의존하던 조건을 없앴다. 사용자에게도 펼칠 수 있는 같은 본문을 제공하며, 검색엔진만을 위한 별도 텍스트를 넣은 것은 아니다.
+
+## Lighthouse 100점 이후에 확인해야 할 것
+
+작업의 출발점은 기존 Lighthouse SEO 100점이었다. 이번에 전후 Lighthouse 점수를 다시 측정하지 않았으므로 점수가 올랐다고 말할 근거는 없다. Lighthouse의 meta description 검사만 보더라도 존재 여부와 빈 값 등을 확인하며 설명의 품질은 평가하지 않는다. 자동 점검 통과와 검색 경쟁력은 구분해야 한다. [Lighthouse 공식 설명](https://developer.chrome.com/docs/lighthouse/seo/meta-description)
+
+이번 검증에서 확인한 결과는 **46개 상세 페이지에 기존 답변을 초기 HTML 본문으로 제공하게 됐다**는 것이다. 배포 후에는 Search Console에서 재크롤링 시점과 렌더링된 HTML을 확인하고, 일반 면접 검색어와 세부 주제 검색어의 노출수·클릭수를 관찰해야 한다. 검색 반영에는 시간이 걸리고 변경이 눈에 띄는 순위 차이로 이어지지 않을 수도 있다. [Google SEO 가이드](https://developers.google.com/search/docs/fundamentals/seo-starter-guide)
+
+답변을 더 작성한 작업은 아니었다. 이미 작성한 답변이 브라우저 데이터에서 시작해 본문으로 나타나는 시점을 바꿨고, 그 차이를 HTML과 브라우저 테스트로 확인했다.
+
+측정일 2026-10-09 · 로컬 webpack 프로덕션 빌드 전후 비교 · 순차 학습 46개 URL · 검색 순위 및 실제 사용자 성능 변화는 미측정.
