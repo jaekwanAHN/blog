@@ -11,7 +11,8 @@ interface PageProps {
 }
 
 export function generateStaticParams() {
-  return getAllTags().map(({ tag }) => ({ tag: encodeURIComponent(tag) }));
+  // 정적 경로의 params는 원본 값으로 전달한다. URL 링크에서만 인코딩한다.
+  return getAllTags().map(({ tag }) => ({ tag }));
 }
 
 export async function generateMetadata({
