@@ -14,14 +14,13 @@ export interface PostFrontmatter {
   date: string;
   description: string;
   tags: string[];
+  updatedAt?: string;
+  noindex?: boolean;
+  draft?: boolean;
 }
 
-export interface PostMeta {
+export interface PostMeta extends PostFrontmatter {
   slug: string;
-  title: string;
-  date: string;
-  description: string;
-  tags: string[];
 }
 
 export interface PostBySlug {
@@ -31,6 +30,34 @@ export interface PostBySlug {
 
 function getSlugFromFilename(filename: string): string {
   return filename.replace(/\.mdx?$/, "");
+}
+
+function parseFrontmatter(data: Record<string, unknown>, filename: string): PostFrontmatter {
+  for (const key of ["title", "description", "date"] as const) {
+    if (typeof data[key] !== "string" || !data[key].trim()) {
+      throw new Error(`${filename}: ${key} must be a non-empty string`);
+    }
+  }
+  for (const key of ["date", "updatedAt"] as const) {
+    const value = data[key];
+    if (value !== undefined && (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})?)?$/.test(value) || Number.isNaN(Date.parse(value)))) {
+      throw new Error(`${filename}: invalid ${key}`);
+    }
+  }
+  for (const key of ["draft", "noindex"] as const) {
+    if (data[key] !== undefined && typeof data[key] !== "boolean") {
+      throw new Error(`${filename}: ${key} must be boolean`);
+    }
+  }
+  return {
+    title: data.title as string,
+    description: data.description as string,
+    date: data.date as string,
+    updatedAt: data.updatedAt as string | undefined,
+    draft: data.draft === true,
+    noindex: data.noindex === true,
+    tags: Array.isArray(data.tags) ? [...new Set(data.tags.filter((tag): tag is string => typeof tag === "string" && !!tag.trim()).map((tag) => tag.trim()))] : [],
+  };
 }
 
 /**
@@ -55,14 +82,8 @@ export function getAllPosts(): PostMeta[] {
     const raw = fs.readFileSync(fullPath, "utf-8");
     const { data } = matter(raw);
     const slug = getSlugFromFilename(filename);
-    return {
-      slug,
-      title: data.title as string,
-      date: data.date as string,
-      description: data.description as string,
-      tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
-    };
-  });
+    return { slug, ...parseFrontmatter(data, filename) };
+  }).filter((post) => !post.draft);
   posts.sort((a, b) => {
     const aTime = new Date(a.date).getTime();
     const bTime = new Date(b.date).getTime();
@@ -101,6 +122,7 @@ export function getPostsByTag(tag: string): PostMeta[] {
 }
 
 export function getPostBySlug(slug: string): PostBySlug | null {
+  if (!getAllSlugs().includes(slug)) return null;
   const mdxPath = path.join(POSTS_DIR, `${slug}.mdx`);
   const mdPath = path.join(POSTS_DIR, `${slug}.md`);
   let fullPath: string;
@@ -114,24 +136,13 @@ export function getPostBySlug(slug: string): PostBySlug | null {
   const raw = fs.readFileSync(fullPath, "utf-8");
   const { data, content } = matter(raw);
   return {
-    frontmatter: {
-      title: data.title as string,
-      date: data.date as string,
-      description: data.description as string,
-      tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
-    },
+    frontmatter: parseFrontmatter(data, fullPath),
     content,
   };
 }
 
 export function getAllSlugs(): string[] {
-  if (!fs.existsSync(POSTS_DIR)) {
-    return [];
-  }
-  return fs
-    .readdirSync(POSTS_DIR)
-    .filter((f) => /\.mdx?$/.test(f))
-    .map((f) => getSlugFromFilename(f));
+  return getAllPosts().map((post) => post.slug);
 }
 
 /**
@@ -152,3 +163,15 @@ export const mdxRehypePlugins = [
     },
   ],
 ];
+
+/** 공통 태그가 많은 글을 우선하며 동점이면 기존 최신순을 유지한다. */
+export function getRelatedPosts(slug: string, tags: string[], limit = 3): PostMeta[] {
+  const normalized = new Set(tags.map((tag) => tag.toLowerCase()));
+  return getAllPosts()
+    .filter((post) => post.slug !== slug && !post.noindex)
+    .map((post) => ({ post, score: new Set(post.tags.map((tag) => tag.toLowerCase()).filter((tag) => normalized.has(tag))).size }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ post }) => post);
+}

@@ -3,11 +3,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { getAllTags } from "@/lib/mdx";
 import { TagLink } from "@/components/tag-link";
+import { pageMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
-  title: "태그",
-  description: "전체 태그 목록",
-};
+export const metadata: Metadata = pageMetadata("기술 주제별 글 모음", "React, Next.js, Supabase, JavaScript 알고리즘 등 기술 주제별 글을 찾아보세요.", "/tags");
 
 export default function TagsPage() {
   const tags = getAllTags();
