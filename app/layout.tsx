@@ -35,7 +35,11 @@ export const metadata: Metadata = {
   title: { default: SITE_NAME, template: `%s | ${SITE_NAME}` },
   description: SITE_DESCRIPTION,
   authors: [AUTHOR],
-  verification: { google: process.env.GOOGLE_SITE_VERIFICATION },
+  verification: {
+    google:
+      process.env.GOOGLE_SITE_VERIFICATION ||
+      "G84VBqZroaK-pyJBjTeg27qv6ARmZmFTZYmPHdS10wc",
+  },
 };
 
 export default function RootLayout({

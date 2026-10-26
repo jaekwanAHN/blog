@@ -280,8 +280,10 @@ canonical, 언어, 설명, H1, 구조화 데이터, noindex 정책 및 404를 �
 이 검사는 Lighthouse 점수나 Google의 실제 색인 상태를 대신하지 않습니다.
 
 Search Console에서 `https://ajkblog.vercel.app/` URL-prefix 속성을 등록한 뒤,
-HTML 태그 인증의 content 값을 배포 환경변수 `GOOGLE_SITE_VERIFICATION`에 넣고
-재배포합니다. 인증 후 `/sitemap.xml`을 제출합니다. 실제 노출은 최신 확정 날짜를
+현재 소유자의 HTML 인증값은 `app/layout.tsx`에 반영되어 있습니다. 이 값은
+공개 HTML에 표시되는 소유권 확인값입니다. 다른 인증값을 사용하려면 배포 환경변수
+`GOOGLE_SITE_VERIFICATION`으로 덮어쓰고 재배포합니다. 운영 홈의 인증 태그를 확인한 뒤
+Search Console에서 확인 버튼을 누르고 `/sitemap.xml`을 제출합니다. 실제 노출은 최신 확정 날짜를
 기준으로 최근 28일과 직전 28일의 페이지별 노출·클릭·CTR·평균 순위를 비교합니다.
 신규 글과 미측정 글은 0회 노출로 처리하지 않습니다.
 
