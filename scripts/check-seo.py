@@ -5,6 +5,7 @@ Run after `pnpm build` and `pnpm start`: python3 scripts/check-seo.py [base URL]
 import concurrent.futures
 from html.parser import HTMLParser
 import json
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -74,6 +75,15 @@ posts = json.loads(subprocess.check_output(['node', '-e', '''
 const fs=require('fs'), matter=require('gray-matter');
 console.log(JSON.stringify(fs.readdirSync('content/posts').filter(f=>/\\.mdx?$/.test(f)).map(f=>({slug:f.replace(/\\.mdx?$/,''),...matter(fs.readFileSync('content/posts/'+f,'utf8')).data}))));
 '''], text=True))
+# Pre-encoded static params can work via local fallback but become 404 on Vercel.
+# Validate build output as well as HTTP so local fallback cannot hide this regression.
+if urllib.parse.urlsplit(BASE).hostname in ('localhost', '127.0.0.1'):
+    routes = json.loads(Path('.next/prerender-manifest.json').read_text())['routes']
+    tags = {tag.strip() for post in posts if not post.get('draft') for tag in post.get('tags', []) if tag.strip()}
+    expected_tag_routes = {'/tags/' + tag for tag in tags}
+    actual_tag_routes = {route for route in routes if route.startswith('/tags/')}
+    assert actual_tag_routes == expected_tag_routes, 'static tag params must be raw values, not percent-encoded URLs'
+
 for attempt in range(30):
     try:
         if fetch('/')[0] == 200:
