@@ -1,5 +1,4 @@
 // components/posts-page.tsx
-import Link from "next/link";
 import { getAllPosts, getAllTags, getTotalPages, POSTS_PER_PAGE } from "@/lib/mdx";
 import { PostList } from "@/components/post-list";
 import { Pagination } from "@/components/pagination";
@@ -27,20 +26,28 @@ export function PostsPage({ currentPage }: PostsPageProps) {
         </h1>
         {tags.length > 0 && (
           <section className="mb-12" aria-label="태그 모음">
-            <div className="mb-3 flex items-baseline justify-between">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                태그
-              </h2>
-              <Link
-                href="/tags"
-                className="text-sm text-zinc-500 underline-offset-4 hover:underline dark:text-zinc-400"
-              >
-                전체 태그 보기
-              </Link>
-            </div>
-            <ul className="flex flex-wrap gap-2">
-              {tags.map(({ tag, count }) => (
-                <li key={tag}>
+            <details className="peer group">
+              <summary className="mb-3 flex cursor-pointer list-none items-baseline justify-between gap-4 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-zinc-500 [&::-webkit-details-marker]:hidden">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                  태그
+                </h2>
+                <span className="text-sm text-zinc-500 underline-offset-4 hover:underline dark:text-zinc-400">
+                  <span className="group-open:hidden">전체 태그 보기</span>
+                  <span className="hidden group-open:inline">태그 접기</span>
+                </span>
+              </summary>
+              <ul className="flex flex-wrap gap-2">
+                {tags.map(({ tag, count }) => (
+                  <li key={tag}>
+                    <TagLink tag={tag} count={count} />
+                  </li>
+                ))}
+              </ul>
+            </details>
+            {/* 숨긴 태그는 탭 순서에서도 제외하고, 펼치면 전체 목록만 표시한다. */}
+            <ul className="flex flex-wrap gap-2 peer-open:hidden">
+              {tags.slice(0, 16).map(({ tag, count }, index) => (
+                <li key={tag} className={index >= 6 ? "hidden sm:block" : undefined}>
                   <TagLink tag={tag} count={count} />
                 </li>
               ))}
